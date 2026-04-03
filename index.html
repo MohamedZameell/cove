@@ -1375,12 +1375,13 @@
   <div class="modal-overlay hidden" id="authModal">
     <div class="modal">
       <h3>Sign in to Isai</h3>
-      <p>Sync your favorites, playlists, and settings across all your devices using magic link email.</p>
-      <input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email">
-      <p id="authMessage" style="font-size:0.82rem;color:var(--accent);min-height:1.2em;"></p>
+      <p>Enter your credentials to access your music library.</p>
+      <input id="emailInput" type="email" placeholder="Email" autocomplete="email">
+      <input id="passwordInput" type="password" placeholder="Password" autocomplete="current-password">
+      <p id="authMessage" style="font-size:0.82rem;color:var(--error);min-height:1.2em;"></p>
       <div class="modal-actions">
         <button class="btn-ghost" id="authCancel">Cancel</button>
-        <button class="btn-primary" id="authSend">Send magic link</button>
+        <button class="btn-primary" id="authSend">Sign in</button>
       </div>
     </div>
   </div>
@@ -1418,14 +1419,17 @@
       "https://jiosaavn-apii.zameelraja.workers.dev/api"
     ];
     let API_BASE = API_ENDPOINTS[0];
-    const SUPABASE_URL = "https://wwiyceynbbdyyrtueran.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind3aXljZXluYmJkeXlydHVlcmFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5NjQ0MjEsImV4cCI6MjA5MDU0MDQyMX0.lTGbuhSXxHrvxukWhCNa1OkQgM7jqoFGcSPWYrJV2HU";
+
+    const USERS = [
+      { email: "zameelraja@gmail.com", password: "zameel@003", name: "Zameel" },
+      { email: "fmfaaiz@gmail.com", password: "faaiz@003", name: "Faaiz" }
+    ];
 
     const CACHE_KEY = "isai_cache_v3";
-    const SESSION_KEY = "isai_session_v2";
-    const DL_META_KEY = "isai_dl_meta_v2";
-    const SETTINGS_KEY = "isai_settings_v2";
+    const AUTH_KEY = "isai_auth_v1";
     const CACHE_TTL = 3600000;
+
+    function userKey(key) { return state.user ? `isai_${state.user.email}_${key}` : `isai_guest_${key}`; }
 
     const CHIPS = [
       // ── Tamil ──
@@ -1460,7 +1464,6 @@
       playlistSongs: {},
       downloads: [],
       user: null,
-      session: null,
       currentQueue: [],
       currentIndex: -1,
       repeatMode: "off",   // off | all | one
@@ -1570,16 +1573,32 @@
       setTimeout(() => dom.toast.classList.remove("show"), 2500);
     }
 
-    // ── STORAGE ──
-    function loadSession() { state.session = safeParse(localStorage.getItem(SESSION_KEY), null); }
-    function saveSession(s) { state.session = s; if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(SESSION_KEY); }
-    function loadDlMeta() { state.downloads = safeParse(localStorage.getItem(DL_META_KEY), []); }
-    function saveDlMeta() { localStorage.setItem(DL_META_KEY, JSON.stringify(state.downloads)); }
-    function loadSettings() { return safeParse(localStorage.getItem(SETTINGS_KEY), {}); }
+    // ── STORAGE (per-user localStorage) ──
+    function loadAuth() {
+      const saved = safeParse(localStorage.getItem(AUTH_KEY), null);
+      if (saved) { state.user = USERS.find(u => u.email === saved.email) || null; }
+    }
+    function saveAuth() {
+      if (state.user) localStorage.setItem(AUTH_KEY, JSON.stringify({ email: state.user.email }));
+      else localStorage.removeItem(AUTH_KEY);
+    }
+    function loadFavorites() { state.favorites = safeParse(localStorage.getItem(userKey("favorites")), []); }
+    function saveFavorites() { localStorage.setItem(userKey("favorites"), JSON.stringify(state.favorites)); }
+    function loadPlaylists() {
+      state.playlists = safeParse(localStorage.getItem(userKey("playlists")), []);
+      state.playlistSongs = safeParse(localStorage.getItem(userKey("playlistSongs")), {});
+    }
+    function savePlaylists() {
+      localStorage.setItem(userKey("playlists"), JSON.stringify(state.playlists));
+      localStorage.setItem(userKey("playlistSongs"), JSON.stringify(state.playlistSongs));
+    }
+    function loadDlMeta() { state.downloads = safeParse(localStorage.getItem(userKey("downloads")), []); }
+    function saveDlMeta() { localStorage.setItem(userKey("downloads"), JSON.stringify(state.downloads)); }
+    function loadSettings() { return safeParse(localStorage.getItem(userKey("settings")), {}); }
     function saveSettings(partial) {
       const cur = loadSettings();
       const next = { ...cur, ...partial };
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      localStorage.setItem(userKey("settings"), JSON.stringify(next));
       return next;
     }
 
@@ -1659,47 +1678,6 @@
       return (d?.data?.results || []).map(normalizeSong).filter(s => s.src).map(enrichSong);
     }
 
-    // ── SUPABASE ──
-    async function sbAuth(path, body, token) {
-      const r = await fetch(`${SUPABASE_URL}${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify(body)
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(d.msg || d.error_description || d.error || "Auth failed");
-      return d;
-    }
-
-    async function sbRequest(path, opts = {}) {
-      let s = state.session;
-      if (s?.expires_at && Date.now() / 1000 > s.expires_at - 60 && s.refresh_token) {
-        s = await sbAuth("/auth/v1/token?grant_type=refresh_token", { refresh_token: s.refresh_token });
-        saveSession(s);
-      }
-      const headers = {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: s?.access_token ? `Bearer ${s.access_token}` : `Bearer ${SUPABASE_ANON_KEY}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation",
-        ...(opts.headers || {})
-      };
-      const r = await fetch(`${SUPABASE_URL}${path}`, { ...opts, headers });
-      const text = await r.text();
-      const data = text ? JSON.parse(text) : null;
-      if (!r.ok) throw new Error(data?.message || `Supabase ${r.status}`);
-      return data;
-    }
-
-    async function fetchProfile() {
-      if (!state.session?.access_token) return null;
-      const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${state.session.access_token}` }
-      });
-      if (!r.ok) return null;
-      state.user = await r.json();
-      return state.user;
-    }
 
     // ── NAVIGATION ──
     function switchPage(page, addHistory = true) {
@@ -1895,6 +1873,15 @@
         { label: isDl(song.id) ? "Remove Download" : "Download", action: () => toggleDownload(song) },
       ];
 
+      // If viewing a playlist, offer remove
+      if (state.currentPage === "playlistView" && state.viewingPlaylist) {
+        items.push({ label: "Remove from playlist", action: () => {
+          removeSongFromPlaylist(state.viewingPlaylist.id, song.id);
+          openPlaylistView(state.viewingPlaylist);
+          toast("Removed from playlist");
+        }});
+      }
+
       if (state.playlists.length) {
         state.playlists.forEach(pl => {
           items.push({ label: `Add to ${pl.name}`, action: () => { addSongToPlaylist(pl.id, song); toast(`Added to ${pl.name}`); } });
@@ -1970,7 +1957,6 @@
           });
         }
         persistSettings({ last_song_id: song.id, last_song: song });
-        if (state.user) upsertHistory(song);
       } catch (err) {
         console.warn("Playback failed", err);
         skipNext();
@@ -2103,13 +2089,12 @@
       const exists = state.favorites.find(f => f.song_id === song.id);
       if (exists) {
         state.favorites = state.favorites.filter(f => f.song_id !== song.id);
-        if (state.user) await sbRequest(`/rest/v1/favorites?user_id=eq.${state.user.id}&song_id=eq.${encodeURIComponent(song.id)}`, { method: "DELETE" }).catch(() => {});
         toast("Removed from Liked Songs");
       } else {
-        state.favorites.unshift({ user_id: state.user?.id || "local", song_id: song.id, song });
-        if (state.user) await sbRequest("/rest/v1/favorites", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify([{ user_id: state.user.id, song_id: song.id, song }]) }).catch(() => {});
+        state.favorites.unshift({ song_id: song.id, song });
         toast("Added to Liked Songs");
       }
+      saveFavorites();
       updateNowFav();
       refreshActiveSongRows();
       if (state.currentPage === "favorites") renderFavorites();
@@ -2141,26 +2126,38 @@
     }
 
     // ── PLAYLISTS ──
-    async function savePlaylist(pl) {
-      if (!state.user) { toast("Sign in to create playlists"); return; }
-      const payload = { user_id: state.user.id, name: pl.name, description: pl.description || "", cover_song: pl.cover_song || null, ...(pl.id ? { id: pl.id } : {}) };
-      await sbRequest("/rest/v1/playlists", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify([payload]) });
-      await syncCloud();
+    function createPlaylist(name) {
+      if (!state.user) { toast("Sign in to create playlists"); return null; }
+      const pl = { id: "pl_" + Date.now(), name, cover_song: null, created_at: Date.now() };
+      state.playlists.push(pl);
+      state.playlistSongs[pl.id] = [];
+      savePlaylists();
+      renderSidebarPlaylists();
+      return pl;
     }
 
-    async function deletePlaylist(id) {
-      await sbRequest(`/rest/v1/playlist_songs?playlist_id=eq.${id}`, { method: "DELETE" });
-      await sbRequest(`/rest/v1/playlists?id=eq.${id}`, { method: "DELETE" });
-      await syncCloud();
+    function deletePlaylist(id) {
+      state.playlists = state.playlists.filter(p => p.id !== id);
+      delete state.playlistSongs[id];
+      savePlaylists();
+      renderSidebarPlaylists();
     }
 
-    async function addSongToPlaylist(plId, song) {
+    function addSongToPlaylist(plId, song) {
       const items = state.playlistSongs[plId] || [];
       if (items.find(s => s.id === song.id)) { toast("Already in playlist"); return; }
-      await sbRequest("/rest/v1/playlist_songs", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify([{ playlist_id: plId, song_id: song.id, song, position: items.length }]) });
+      items.push(song.src ? song : normalizeSong(song));
+      state.playlistSongs[plId] = items;
       const pl = state.playlists.find(p => p.id === plId);
-      if (pl && !pl.cover_song) await savePlaylist({ ...pl, cover_song: song });
-      else await syncCloud();
+      if (pl && !pl.cover_song) pl.cover_song = song;
+      savePlaylists();
+      renderSidebarPlaylists();
+    }
+
+    function removeSongFromPlaylist(plId, songId) {
+      if (!state.playlistSongs[plId]) return;
+      state.playlistSongs[plId] = state.playlistSongs[plId].filter(s => s.id !== songId);
+      savePlaylists();
     }
 
     function openPlaylistModal(song = null) {
@@ -2184,12 +2181,12 @@
       dom.playlistModal.classList.remove("hidden");
     }
 
-    dom.plSave.onclick = async () => {
+    dom.plSave.onclick = () => {
       const name = dom.plNameInput.value.trim();
       if (!name) { dom.plModalMsg.textContent = "Enter a name"; return; }
-      const pl = await savePlaylist({ name });
-      if (state.pendingPlaylistSong && pl) {
-        await addSongToPlaylist(pl.id || state.playlists[0]?.id, state.pendingPlaylistSong);
+      const pl = createPlaylist(name);
+      if (pl && state.pendingPlaylistSong) {
+        addSongToPlaylist(pl.id, state.pendingPlaylistSong);
       }
       dom.playlistModal.classList.add("hidden");
       toast(`Playlist "${name}" created`);
@@ -2199,53 +2196,31 @@
     $("sidebarCreatePlaylist").onclick = () => openPlaylistModal();
 
     // ── PERSIST SETTINGS ──
-    async function persistSettings(partial) {
+    function persistSettings(partial) {
       saveSettings(partial);
-      if (!state.user) return;
-      await sbRequest("/rest/v1/settings", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify([{ user_id: state.user.id, ...loadSettings() }]) }).catch(() => {});
     }
 
-    async function upsertHistory(song) {
-      await sbRequest("/rest/v1/history", { method: "POST", body: JSON.stringify([{ user_id: state.user.id, song_id: song.id, song }]) }).catch(() => {});
-    }
-
-    // ── CLOUD SYNC ──
-    async function syncCloud() {
-      if (!state.user) return;
-      const [favs, pls, plSongs, settings] = await Promise.all([
-        sbRequest(`/rest/v1/favorites?user_id=eq.${state.user.id}&select=*`),
-        sbRequest(`/rest/v1/playlists?user_id=eq.${state.user.id}&select=*&order=updated_at.desc`),
-        sbRequest(`/rest/v1/playlist_songs?select=*&order=position.asc`),
-        sbRequest(`/rest/v1/settings?user_id=eq.${state.user.id}&select=*`)
-      ]);
-      state.favorites = Array.isArray(favs) ? favs : [];
-      state.playlists = Array.isArray(pls) ? pls : [];
-      state.playlistSongs = {};
-      (Array.isArray(plSongs) ? plSongs : []).forEach(ps => {
-        if (!state.playlistSongs[ps.playlist_id]) state.playlistSongs[ps.playlist_id] = [];
-        state.playlistSongs[ps.playlist_id].push(normalizeSong(ps.song));
-      });
-      const s = Array.isArray(settings) && settings[0] ? settings[0] : {};
-      state.repeatMode = s.repeat_mode || "off";
-      state.shuffleOn = !!s.shuffle_enabled;
+    // ── LOAD USER DATA ──
+    function loadUserData() {
+      loadFavorites();
+      loadPlaylists();
+      loadDlMeta();
+      const settings = loadSettings();
+      state.repeatMode = settings.repeat_mode || "off";
+      state.shuffleOn = !!settings.shuffle_enabled;
+      dom.shuffleBtn.classList.toggle("is-active", state.shuffleOn);
+      dom.repeatBtn.classList.toggle("is-active", state.repeatMode !== "off");
       renderSidebarPlaylists();
+      renderFavorites();
+      renderDownloads();
       updateNowFav();
     }
 
     // ── AUTH ──
-    function parseSessionFromUrl() {
-      const hash = window.location.hash.startsWith("#") ? new URLSearchParams(window.location.hash.slice(1)) : null;
-      if (!hash || !hash.get("access_token")) return false;
-      const session = { access_token: hash.get("access_token"), refresh_token: hash.get("refresh_token"), expires_at: Number(hash.get("expires_at") || 0) };
-      saveSession(session);
-      history.replaceState({}, document.title, window.location.pathname + window.location.search);
-      return true;
-    }
-
     function updateAuthUI() {
       if (state.user) {
-        dom.userName.textContent = state.user.email?.split("@")[0] || "User";
-        dom.userAvatar.textContent = (state.user.email || "U")[0].toUpperCase();
+        dom.userName.textContent = state.user.name;
+        dom.userAvatar.textContent = state.user.name[0].toUpperCase();
       } else {
         dom.userName.textContent = "Sign in";
         dom.userAvatar.textContent = "?";
@@ -2254,26 +2229,44 @@
 
     dom.authTrigger.onclick = () => {
       if (state.user) {
-        if (confirm("Sign out?")) { saveSession(null); state.user = null; state.favorites = []; state.playlists = []; state.playlistSongs = {}; updateAuthUI(); renderSidebarPlaylists(); toast("Signed out"); }
+        if (confirm("Sign out?")) {
+          state.user = null;
+          saveAuth();
+          state.favorites = []; state.playlists = []; state.playlistSongs = []; state.downloads = [];
+          updateAuthUI();
+          renderSidebarPlaylists();
+          renderFavorites();
+          renderDownloads();
+          toast("Signed out");
+        }
       } else {
-        dom.emailInput.value = "zameelraja@gmail.com";
+        dom.emailInput.value = "";
+        $("passwordInput").value = "";
         dom.authMessage.textContent = "";
         dom.authModal.classList.remove("hidden");
       }
     };
 
-    dom.authSend.onclick = async () => {
-      const email = dom.emailInput.value.trim();
-      if (!email) return;
-      try {
-        await sbAuth("/auth/v1/otp", { email, create_user: true, options: { shouldCreateUser: true, emailRedirectTo: window.location.href.split("#")[0] } });
-        dom.authMessage.textContent = "Magic link sent! Check your email.";
-        dom.authMessage.style.color = "var(--accent)";
-      } catch (err) {
-        dom.authMessage.textContent = err.message;
-        dom.authMessage.style.color = "var(--error)";
+    dom.authSend.onclick = () => {
+      const email = dom.emailInput.value.trim().toLowerCase();
+      const password = $("passwordInput").value;
+      if (!email || !password) { dom.authMessage.textContent = "Enter email and password"; return; }
+      const found = USERS.find(u => u.email === email && u.password === password);
+      if (!found) {
+        dom.authMessage.textContent = "Invalid email or password";
+        return;
       }
+      state.user = found;
+      saveAuth();
+      dom.authModal.classList.add("hidden");
+      updateAuthUI();
+      loadUserData();
+      toast(`Welcome back, ${found.name}!`);
     };
+
+    // Allow Enter key in password field
+    $("passwordInput").addEventListener("keydown", (e) => { if (e.key === "Enter") dom.authSend.click(); });
+    dom.emailInput.addEventListener("keydown", (e) => { if (e.key === "Enter") $("passwordInput").focus(); });
 
     dom.authCancel.onclick = () => dom.authModal.classList.add("hidden");
 
@@ -2369,35 +2362,17 @@
 
     // ── INIT ──
     (async () => {
-      loadSession();
-      loadDlMeta();
-
-      const settings = loadSettings();
-      state.repeatMode = settings.repeat_mode || "off";
-      state.shuffleOn = !!settings.shuffle_enabled;
-      dom.shuffleBtn.classList.toggle("is-active", state.shuffleOn);
-      dom.repeatBtn.classList.toggle("is-active", state.repeatMode !== "off");
-
+      loadAuth();
+      updateAuthUI();
       renderChips();
 
-      // Check URL for auth callback
-      if (parseSessionFromUrl()) {
-        // session parsed from URL
-      }
-
-      if (state.session) {
-        await fetchProfile();
-      }
-
-      updateAuthUI();
-
       if (state.user) {
-        await syncCloud();
+        loadUserData();
+      } else {
+        renderFavorites();
+        renderDownloads();
+        renderSidebarPlaylists();
       }
-
-      renderFavorites();
-      renderDownloads();
-      renderSidebarPlaylists();
 
       await loadInitial();
     })();
