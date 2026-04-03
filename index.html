@@ -29,6 +29,8 @@
       --nav-h: 64px;
       --safe-top: env(safe-area-inset-top, 0px);
       --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
       --radius-sm: 4px;
       --radius-md: 8px;
       --radius-lg: 12px;
@@ -1006,9 +1008,10 @@
       bottom: 0;
       left: 0;
       right: 0;
-      background: linear-gradient(transparent, rgba(0,0,0,0.95) 15%);
-      padding: 8px 0 calc(8px + var(--safe-bottom));
+      background: var(--bg);
+      padding: 6px 0 calc(6px + var(--safe-bottom));
       z-index: 45;
+      border-top: 1px solid var(--divider);
     }
 
     .mobile-nav-inner {
@@ -1070,98 +1073,208 @@
 
     /* Mobile */
     @media (max-width: 768px) {
-      :root { --player-h: 64px; }
+      :root {
+        --player-h: 56px;
+        --nav-h: 52px;
+        --mob-bottom: calc(var(--nav-h) + var(--safe-bottom));
+      }
 
       .app {
         grid-template-columns: 1fr;
-        grid-template-rows: 1fr var(--player-h);
+        grid-template-rows: 1fr;
+        height: 100vh;
+        height: 100dvh;
+        height: -webkit-fill-available;
       }
 
       .sidebar { display: none; }
 
       .main-content {
         grid-column: 1;
+        grid-row: 1;
         border-radius: 0;
         margin: 0;
-        padding-bottom: calc(var(--player-h) + var(--nav-h) + var(--safe-bottom) + 16px);
+        background: var(--bg-base);
+        /* Space for: player bar + gap + bottom nav + safe area */
+        padding-bottom: calc(var(--player-h) + var(--mob-bottom) + 24px);
+        -webkit-overflow-scrolling: touch;
       }
 
       .mobile-nav { display: block; }
 
-      .topbar { padding: 12px 16px; padding-top: calc(12px + var(--safe-top)); }
+      .topbar {
+        padding: 10px 16px;
+        padding-top: calc(10px + var(--safe-top));
+        background: rgba(18,18,18,0.92);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+      }
       .topbar-nav { display: none; }
+      .topbar .search-box { max-width: 100%; }
+      .topbar .search-box input { font-size: 16px; padding: 10px 16px 10px 38px; } /* 16px prevents Safari auto-zoom */
+
       .page { padding: 0 16px 16px; }
 
-      .featured-banner { min-height: 220px; }
-      .featured-banner .banner-title { font-size: 1.6rem; }
+      .featured-banner { min-height: 200px; }
+      .featured-banner .banner-title { font-size: 1.5rem; }
       .featured-banner .banner-content { padding: 20px; }
       .featured-banner .banner-play { width: 44px; height: 44px; }
 
       .card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
       .card { padding: 12px; }
+      .card .card-play { opacity: 1; transform: translateY(0); width: 40px; height: 40px; }
+      .card .card-play svg { width: 18px; height: 18px; }
 
-      .song-row { grid-template-columns: 40px 1fr auto; gap: 12px; padding: 8px 12px; }
+      .song-row { grid-template-columns: 40px 1fr auto; gap: 12px; padding: 10px 12px; min-height: 56px; }
       .song-row .row-num { display: none; }
       .song-row .row-art { width: 40px; height: 40px; }
-      .action-btn { opacity: 1; width: 28px; height: 28px; }
+      .action-btn { opacity: 1; width: 32px; height: 32px; } /* Bigger touch target */
 
+      /* ── MOBILE PLAYER BAR ── */
       .player-bar {
-        grid-template-columns: 1fr auto;
-        padding: 0 12px;
-        gap: 8px;
-        bottom: calc(var(--nav-h) + var(--safe-bottom));
+        display: flex;
+        align-items: center;
+        padding: 0 8px 0 8px;
+        gap: 0;
         position: fixed;
-        left: 0; right: 0;
+        bottom: calc(var(--mob-bottom) + 8px);
+        left: 8px;
+        right: 8px;
         height: var(--player-h);
         z-index: 46;
-        border-radius: 8px;
-        margin: 0 8px;
+        border-radius: 12px;
         background: var(--bg-elevated);
         border-top: none;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        /* Remove from parent grid */
+        grid-row: auto;
+        grid-column: auto;
       }
 
       .player-center { display: none; }
       .player-right { display: none; }
 
-      .player-left .now-art { width: 42px; height: 42px; border-radius: var(--radius-sm); }
-      .player-left .now-actions { gap: 4px; }
+      .player-left {
+        flex: 1;
+        gap: 10px;
+        overflow: hidden;
+        min-width: 0;
+        cursor: pointer;
+      }
+      .player-left .now-art { width: 40px; height: 40px; border-radius: 6px; flex-shrink: 0; }
+      .player-left .now-info { min-width: 0; flex: 1; }
+      .player-left .now-title { font-size: 0.82rem; font-weight: 600; }
+      .player-left .now-artist { font-size: 0.7rem; }
+      .player-left .now-actions { display: none; } /* Hide fav btn in mini bar */
 
       /* Mobile mini controls */
       .player-mobile-ctrls {
-        display: flex;
+        display: flex !important;
         align-items: center;
-        gap: 4px;
+        gap: 0;
+        flex-shrink: 0;
       }
       .player-mobile-ctrls button {
-        width: 36px; height: 36px;
+        width: 40px; height: 40px;
         border-radius: 50%;
         display: grid; place-items: center;
         color: var(--text);
-        font-size: 1.1rem;
+        -webkit-tap-highlight-color: transparent;
       }
 
       .player-mobile-progress {
         position: absolute;
-        top: 0; left: 0; right: 0;
-        height: 2px;
-        background: rgba(255,255,255,0.1);
+        bottom: 0; left: 12px; right: 12px;
+        height: 3px;
+        background: rgba(255,255,255,0.12);
+        border-radius: 2px;
       }
 
       .player-mobile-progress .mob-fill {
         height: 100%;
         background: var(--accent);
+        border-radius: 2px;
         transition: width 0.3s linear;
       }
 
-      .toast { bottom: calc(var(--player-h) + var(--nav-h) + var(--safe-bottom) + 16px); }
+      .toast { bottom: calc(var(--player-h) + var(--mob-bottom) + 24px); }
 
-      .page-header h2 { font-size: 1.4rem; }
-      .section-header h3 { font-size: 1.1rem; }
+      .page-header h2 { font-size: 1.35rem; }
+      .section-header h3 { font-size: 1.05rem; }
+
+      /* Playlist header controls - smaller on mobile */
+      .pl-header-controls { margin-top: 12px; }
+      .pl-shuffle-play { width: 48px; height: 48px; }
+      .pl-shuffle-play svg { width: 20px; height: 20px; }
+
+      /* Browse grid - 2 cols on mobile */
+      .browse-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+      .browse-card { height: 85px; padding: 14px; }
+      .browse-card h4 { font-size: 0.95rem; }
+
+      /* Modal safe areas */
+      .modal-overlay { padding: calc(24px + var(--safe-top)) 16px calc(24px + var(--safe-bottom)); }
+      .modal { max-width: 100%; padding: 24px; }
+      .modal input { font-size: 16px; } /* Prevent Safari zoom */
+
+      /* Context menu on mobile */
+      .context-menu { left: 16px !important; right: 16px; width: auto; }
     }
 
-    /* Small phone */
+    /* ── MOBILE BOTTOM NAV (override) ── */
+    @media (max-width: 768px) {
+      .mobile-nav {
+        background: var(--bg);
+        border-top: 1px solid var(--divider);
+        padding: 6px 0 calc(6px + var(--safe-bottom));
+      }
+
+      .mobile-nav-btn {
+        padding: 6px 16px;
+        font-size: 0.6rem;
+        gap: 3px;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .mobile-nav-btn svg { width: 22px; height: 22px; }
+    }
+
+    /* ── NOW PLAYING MOBILE ── */
+    @media (max-width: 768px) {
+      .now-playing-overlay {
+        padding-top: var(--safe-top);
+        padding-bottom: var(--safe-bottom);
+      }
+      .np-header { padding: 12px 16px; }
+      .np-art-wrap {
+        width: min(75vw, 340px);
+        margin: 8px 0 24px;
+        border-radius: 8px;
+      }
+      .np-info { padding: 0 24px; }
+      .np-info .np-title { font-size: 1.15rem; }
+      .np-info .np-artist { font-size: 0.85rem; }
+      .np-progress { padding: 20px 24px 8px; }
+      .np-controls { gap: 20px; padding: 12px 0; }
+      .np-controls .np-ctrl { width: 36px; height: 36px; }
+      .np-controls .np-ctrl.np-play { width: 56px; height: 56px; }
+      .np-controls .np-ctrl.np-play svg { width: 22px; height: 22px; }
+      .np-extra { gap: 20px; padding: 8px 0 12px; }
+      .np-lyrics { padding: 16px 24px calc(40px + var(--safe-bottom)); }
+    }
+
+    /* Small phone (iPhone SE, etc.) */
     @media (max-width: 375px) {
       .card-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      .np-art-wrap { width: min(70vw, 280px); }
+      .np-controls .np-ctrl.np-play { width: 48px; height: 48px; }
+      .recent-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* iPhone 14 Pro Max specific (430px width) */
+    @media (min-width: 414px) and (max-width: 768px) {
+      .card-grid { grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); }
+      .browse-grid { grid-template-columns: repeat(2, 1fr); gap: 14px; }
+      .recent-grid { grid-template-columns: repeat(2, 1fr); }
     }
 
     /* ── PAGE TRANSITIONS ── */
@@ -1562,9 +1675,9 @@
     }
 
     @media (max-width: 768px) {
-      .np-art-wrap { width: min(80vw, 320px); }
-      .recent-grid { grid-template-columns: repeat(2, 1fr); }
       .recent-card .rc-title { font-size: 0.78rem; }
+      .recent-card { height: 50px; }
+      .recent-card img { width: 50px; height: 50px; }
     }
   </style>
 </head>
@@ -2596,10 +2709,13 @@
     function updateMobileUI() {
       const isMobile = window.innerWidth <= 768;
       dom.mobileProgress.style.display = isMobile ? "block" : "none";
-      $("playerMobileCtrls").style.display = isMobile ? "flex" : "none";
+      const mobCtrls = $("playerMobileCtrls");
+      if (mobCtrls) mobCtrls.style.display = isMobile ? "flex" : "none";
     }
     updateMobileUI();
     window.addEventListener("resize", updateMobileUI);
+    // Also run on orientation change for iOS
+    window.addEventListener("orientationchange", () => setTimeout(updateMobileUI, 100));
 
     // Mobile mini play/pause
     $("mobPlayPause").onclick = (e) => {
@@ -3304,8 +3420,12 @@
     };
 
     // Open now playing by clicking player bar (song info area)
-    dom.nowTitle.onclick = openNowPlaying;
-    dom.nowArt.parentElement.onclick = openNowPlaying;
+    // On mobile, whole player-left area opens now playing
+    document.querySelector(".player-left").addEventListener("click", (e) => {
+      // Don't open if clicking fav button
+      if (e.target.closest(".now-actions")) return;
+      if (currentSong()) openNowPlaying();
+    });
 
     // Also update now playing on play/pause
     audio.onplay = () => { updatePlayBtn(true); updateNpControls(); updateMobPlayBtn(true); refreshActiveSongRows(); };
