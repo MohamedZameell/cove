@@ -2336,30 +2336,33 @@
     const CACHE_KEY = "isai_cache_v3";
     const AUTH_KEY = "isai_auth_v1";
     const CACHE_TTL = 3600000;
+    const CURRENT_YEAR = new Date().getFullYear();
+    const HOME_SECTIONS_CACHE_KEY = "isai_home_sections_v1";
+    const HOME_SECTIONS_INITIAL_COUNT = 3;
 
     function userKey(key) { return state.user ? `isai_${state.user.email}_${key}` : `isai_guest_${key}`; }
 
     const CHIPS = [
       // ── Tamil ──
-      { label: "Trending", mode: "playlist", query: "tamil hits 2025", feature: "Trending Now" },
-      { label: "New Releases", mode: "search", query: "new tamil songs 2025", feature: "Fresh Drops" },
+      { label: "Trending", mode: "playlist", query: `tamil hits ${CURRENT_YEAR}`, feature: "Trending Now" },
+      { label: "New Releases", mode: "search", query: `new tamil songs ${CURRENT_YEAR}`, feature: "Fresh Drops" },
       { label: "Melody", mode: "search", query: "tamil melody songs", feature: "Soft Melodies" },
       { label: "Mass", mode: "search", query: "tamil mass kuthu songs", feature: "Maximum Energy" },
       { label: "A.R. Rahman", mode: "search", query: "AR Rahman tamil hits", feature: "The Mozart" },
       { label: "Anirudh", mode: "search", query: "Anirudh Ravichander songs", feature: "Rockstar" },
       // ── International ──
-      { label: "Global Top", mode: "playlist", query: "global top hits 2025", feature: "Global Top Hits" },
-      { label: "Pop", mode: "search", query: "top pop songs 2025", feature: "Pop Hits" },
-      { label: "Hip-Hop", mode: "search", query: "top hip hop rap songs 2025", feature: "Hip-Hop Bangers" },
-      { label: "K-Pop", mode: "search", query: "kpop hits 2025", feature: "K-Pop Wave" },
-      { label: "Latin", mode: "search", query: "top latin reggaeton songs 2025", feature: "Latin Fire" },
-      { label: "Bollywood", mode: "search", query: "bollywood hindi hits 2025", feature: "Bollywood Vibes" },
-      { label: "EDM", mode: "search", query: "edm dance electronic songs 2025", feature: "Electronic Beats" },
-      { label: "R&B", mode: "search", query: "rnb soul songs 2025", feature: "R&B Soul" },
-      { label: "Rock", mode: "search", query: "top rock songs 2025", feature: "Rock Anthems" },
+      { label: "Global Top", mode: "playlist", query: `global top hits ${CURRENT_YEAR}`, feature: "Global Top Hits" },
+      { label: "Pop", mode: "search", query: `top pop songs ${CURRENT_YEAR}`, feature: "Pop Hits" },
+      { label: "Hip-Hop", mode: "search", query: `top hip hop rap songs ${CURRENT_YEAR}`, feature: "Hip-Hop Bangers" },
+      { label: "K-Pop", mode: "search", query: `kpop hits ${CURRENT_YEAR}`, feature: "K-Pop Wave" },
+      { label: "Latin", mode: "search", query: `top latin reggaeton songs ${CURRENT_YEAR}`, feature: "Latin Fire" },
+      { label: "Bollywood", mode: "search", query: `bollywood hindi hits ${CURRENT_YEAR}`, feature: "Bollywood Vibes" },
+      { label: "EDM", mode: "search", query: `edm dance electronic songs ${CURRENT_YEAR}`, feature: "Electronic Beats" },
+      { label: "R&B", mode: "search", query: `rnb soul songs ${CURRENT_YEAR}`, feature: "R&B Soul" },
+      { label: "Rock", mode: "search", query: `top rock songs ${CURRENT_YEAR}`, feature: "Rock Anthems" },
       { label: "Jazz", mode: "search", query: "jazz songs classics", feature: "Jazz Classics" },
-      { label: "Arabic", mode: "search", query: "arabic top songs 2025", feature: "Arabic Hits" },
-      { label: "Afrobeats", mode: "search", query: "afrobeats top songs 2025", feature: "Afrobeats Pulse" },
+      { label: "Arabic", mode: "search", query: `arabic top songs ${CURRENT_YEAR}`, feature: "Arabic Hits" },
+      { label: "Afrobeats", mode: "search", query: `afrobeats top songs ${CURRENT_YEAR}`, feature: "Afrobeats Pulse" },
       { label: "Love", mode: "search", query: "love songs romantic hits", feature: "Romantic Vibes" },
       { label: "90s Hits", mode: "search", query: "90s hits songs", feature: "Classic Era" }
     ];
@@ -2460,10 +2463,13 @@
       return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
     }
 
+    const decodeEl = document.createElement("textarea");
     function decode(s) {
-      const t = document.createElement("textarea");
-      t.innerHTML = s || "";
-      return t.value;
+      if (!s) return "";
+      const text = String(s);
+      if (!/[<&]/.test(text)) return text;
+      decodeEl.innerHTML = text;
+      return decodeEl.value;
     }
 
     function safeParse(val, fallback) {
@@ -2479,6 +2485,187 @@
       dom.toast.textContent = msg;
       dom.toast.classList.add("show");
       setTimeout(() => dom.toast.classList.remove("show"), 2500);
+    }
+
+    function clearChildren(el) {
+      el.textContent = "";
+      return el;
+    }
+
+    function makeSvgIcon(href, size = 16) {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.style.width = `${size}px`;
+      svg.style.height = `${size}px`;
+      svg.style.fill = "currentColor";
+      const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+      use.setAttribute("href", href);
+      svg.appendChild(use);
+      return svg;
+    }
+
+    function setButtonIcon(btn, href, size = 16) {
+      clearChildren(btn);
+      btn.appendChild(makeSvgIcon(href, size));
+    }
+
+    function appendArtistLinks(container, artists, fallbackText, onClick) {
+      clearChildren(container);
+      if (artists?.length) {
+        artists.forEach((artist, index) => {
+          if (index) container.append(", ");
+          const link = document.createElement("span");
+          link.className = "artist-link";
+          link.dataset.artistId = artist.id;
+          link.textContent = artist.name;
+          link.onclick = (e) => onClick?.(e, artist.id);
+          container.appendChild(link);
+        });
+        return;
+      }
+      container.textContent = fallbackText;
+    }
+
+    function htmlToPlainText(html) {
+      if (!html) return "";
+      const doc = new DOMParser().parseFromString(String(html), "text/html");
+      const parts = [];
+      const blockTags = new Set(["P", "DIV", "LI", "UL", "OL", "SECTION", "ARTICLE", "H1", "H2", "H3", "H4", "H5", "H6"]);
+      function walk(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          parts.push(node.textContent || "");
+          return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        if (node.tagName === "BR") {
+          parts.push("\n");
+          return;
+        }
+        const isBlock = blockTags.has(node.tagName);
+        if (isBlock && parts.length && !parts[parts.length - 1].endsWith("\n")) parts.push("\n");
+        node.childNodes.forEach(walk);
+        if (isBlock && parts.length && !parts[parts.length - 1].endsWith("\n")) parts.push("\n");
+      }
+      doc.body.childNodes.forEach(walk);
+      return parts.join("").replace(/\n{3,}/g, "\n\n").trim();
+    }
+
+    function makePlaylistHeader(kind, title, count, image) {
+      const wrapper = document.createElement("div");
+      wrapper.style.display = "flex";
+      wrapper.style.alignItems = "center";
+      wrapper.style.justifyContent = "space-between";
+      wrapper.style.gap = "24px";
+
+      const infoWrap = document.createElement("div");
+      infoWrap.style.display = "flex";
+      infoWrap.style.alignItems = "center";
+      infoWrap.style.gap = "24px";
+
+      const cover = document.createElement("div");
+      cover.style.width = "80px";
+      cover.style.height = "80px";
+      cover.style.borderRadius = "4px";
+      cover.style.background = "var(--bg-elevated)";
+      cover.style.overflow = "hidden";
+      if (image) {
+        const img = document.createElement("img");
+        img.src = image;
+        img.alt = "";
+        img.style.width = "100%";
+        img.style.height = "100%";
+        img.style.objectFit = "cover";
+        cover.appendChild(img);
+      }
+
+      const textWrap = document.createElement("div");
+      const kindEl = document.createElement("p");
+      kindEl.style.fontSize = "0.75rem";
+      kindEl.style.fontWeight = "600";
+      kindEl.style.textTransform = "uppercase";
+      kindEl.style.color = "var(--text-sub)";
+      kindEl.textContent = kind;
+      const titleEl = document.createElement("h2");
+      titleEl.textContent = title;
+      const countEl = document.createElement("p");
+      countEl.style.color = "var(--text-sub)";
+      countEl.style.fontSize = "0.85rem";
+      countEl.textContent = `${count} songs`;
+      textWrap.append(kindEl, titleEl, countEl);
+
+      infoWrap.append(cover, textWrap);
+
+      const controls = document.createElement("div");
+      controls.className = "pl-header-controls";
+      const playBtn = document.createElement("button");
+      playBtn.className = "pl-shuffle-play";
+      playBtn.title = "Play";
+      playBtn.appendChild(makeSvgIcon("#ico-play"));
+
+      const shuffleBtn = document.createElement("button");
+      shuffleBtn.className = "ctrl-btn";
+      shuffleBtn.title = "Shuffle play";
+      shuffleBtn.style.opacity = "1";
+      shuffleBtn.appendChild(makeSvgIcon("#ico-shuffle", 20));
+
+      controls.append(playBtn, shuffleBtn);
+      wrapper.append(infoWrap, controls);
+      return { element: wrapper, playBtn, shuffleBtn };
+    }
+
+    function renderStatusMessage(target, title, message, color = "var(--text-sub)") {
+      clearChildren(target);
+      const wrap = document.createElement("div");
+      wrap.style.textAlign = "center";
+      wrap.style.padding = "48px";
+      wrap.style.color = color;
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+      const body = document.createElement("p");
+      body.textContent = message;
+      wrap.append(heading, body);
+      target.appendChild(wrap);
+    }
+
+    function makeHomeSectionPlaceholder(index) {
+      const placeholder = document.createElement("div");
+      placeholder.className = "home-section-placeholder";
+      placeholder.dataset.sectionIndex = index;
+      placeholder.style.marginBottom = "36px";
+
+      const header = document.createElement("div");
+      header.className = "section-header";
+      const headerSkeleton = document.createElement("div");
+      headerSkeleton.className = "skeleton skeleton-text";
+      headerSkeleton.style.width = "180px";
+      headerSkeleton.style.height = "24px";
+      header.appendChild(headerSkeleton);
+
+      const grid = document.createElement("div");
+      grid.className = "card-grid";
+      for (let i = 0; i < 4; i++) {
+        const card = document.createElement("div");
+        card.className = "card";
+        const art = document.createElement("div");
+        art.className = "skeleton";
+        art.style.width = "100%";
+        art.style.aspectRatio = "1";
+        art.style.borderRadius = "8px";
+        art.style.marginBottom = "16px";
+        const line1 = document.createElement("div");
+        line1.className = "skeleton skeleton-text";
+        line1.style.height = "14px";
+        line1.style.width = "72%";
+        line1.style.marginBottom = "8px";
+        const line2 = document.createElement("div");
+        line2.className = "skeleton skeleton-text";
+        line2.style.height = "12px";
+        line2.style.width = "48%";
+        card.append(art, line1, line2);
+        grid.appendChild(card);
+      }
+
+      placeholder.append(header, grid);
+      return placeholder;
     }
 
     // ── STORAGE (per-user localStorage) ──
@@ -2655,17 +2842,33 @@
 
     // ── RENDER: FEATURED BANNER ──
     function renderBanner(song, label) {
-      if (!song) { dom.featuredBanner.innerHTML = ""; return; }
-      dom.featuredBanner.innerHTML = `
-        ${song.image ? `<img class="banner-art" src="${song.image}" alt="">` : ""}
-        <div class="banner-gradient"></div>
-        <div class="banner-content">
-          <div class="banner-label">${label || "Featured"}</div>
-          <div class="banner-title">${song.title}</div>
-          <div class="banner-sub">${song.artist}${song.album ? ` \u2022 ${song.album}` : ""}</div>
-          <div class="banner-play"><svg><use href="#ico-play"/></svg></div>
-        </div>
-      `;
+      clearChildren(dom.featuredBanner);
+      if (!song) return;
+      if (song.image) {
+        const art = document.createElement("img");
+        art.className = "banner-art";
+        art.src = song.image;
+        art.alt = "";
+        dom.featuredBanner.appendChild(art);
+      }
+      const gradient = document.createElement("div");
+      gradient.className = "banner-gradient";
+      const content = document.createElement("div");
+      content.className = "banner-content";
+      const labelEl = document.createElement("div");
+      labelEl.className = "banner-label";
+      labelEl.textContent = label || "Featured";
+      const titleEl = document.createElement("div");
+      titleEl.className = "banner-title";
+      titleEl.textContent = song.title;
+      const subEl = document.createElement("div");
+      subEl.className = "banner-sub";
+      subEl.textContent = `${song.artist}${song.album ? " • " + song.album : ""}`;
+      const playEl = document.createElement("div");
+      playEl.className = "banner-play";
+      playEl.appendChild(makeSvgIcon("#ico-play", 24));
+      content.append(labelEl, titleEl, subEl, playEl);
+      dom.featuredBanner.append(gradient, content);
       dom.featuredBanner.onclick = () => playSongAt(0, state.songs);
     }
 
@@ -2678,36 +2881,71 @@
       const row = document.createElement("div");
       row.className = `song-row${isCurrent(song) ? " active" : ""}`;
       row.dataset.songId = song.id;
-      // Build clickable artist links
-      let artistHtml = song.artist;
-      if (song.artistIds?.length) {
-        artistHtml = song.artistIds.map(a =>
-          `<span class="artist-link" data-artist-id="${a.id}">${a.name}</span>`
-        ).join(", ");
+      const rowNum = document.createElement("span");
+      rowNum.className = "row-num";
+      rowNum.dataset.idx = index + 1;
+      const numText = document.createElement("span");
+      numText.className = "num-text";
+      numText.textContent = index + 1;
+      const hoverPlay = document.createElement("span");
+      hoverPlay.className = "hover-play";
+      hoverPlay.appendChild(makeSvgIcon("#ico-play", 14));
+      rowNum.append(numText, hoverPlay);
+
+      const rowArt = document.createElement("div");
+      rowArt.className = "row-art";
+      if (song.image) {
+        const img = document.createElement("img");
+        img.src = song.image;
+        img.alt = "";
+        img.loading = "lazy";
+        rowArt.appendChild(img);
       }
-      const playsHtml = song.playCount ? `<span class="row-plays">${formatPlayCount(song.playCount)}</span>` : "";
-      row.innerHTML = `
-        <span class="row-num" data-idx="${index + 1}"><span class="num-text">${index + 1}</span><span class="hover-play"><svg style="width:14px;height:14px;fill:currentColor"><use href="#ico-play"/></svg></span></span>
-        <div class="row-art">${song.image ? `<img src="${song.image}" alt="" loading="lazy">` : ""}</div>
-        <div class="row-info">
-          <div class="row-title">${song.title}</div>
-          <div class="row-artist">${artistHtml}</div>
-        </div>
-        <div class="row-actions">
-          ${playsHtml}
-          <button class="action-btn${isFav(song.id) ? " is-active" : ""}" data-act="fav" title="Like">
-            <svg style="width:16px;height:16px;fill:currentColor"><use href="${isFav(song.id) ? "#ico-heart" : "#ico-heart-outline"}"/></svg>
-          </button>
-          <span class="duration">${fmt(song.duration)}</span>
-          <button class="action-btn" data-act="more" title="More">
-            <svg style="width:16px;height:16px;fill:currentColor"><use href="#ico-more"/></svg>
-          </button>
-        </div>
-      `;
+
+      const rowInfo = document.createElement("div");
+      rowInfo.className = "row-info";
+      const rowTitle = document.createElement("div");
+      rowTitle.className = "row-title";
+      rowTitle.textContent = song.title;
+      const rowArtist = document.createElement("div");
+      rowArtist.className = "row-artist";
+      appendArtistLinks(rowArtist, song.artistIds, song.artist, (e, artistId) => {
+        e.stopPropagation();
+        openArtistPage(artistId);
+      });
+      rowInfo.append(rowTitle, rowArtist);
+
+      const rowActions = document.createElement("div");
+      rowActions.className = "row-actions";
+      if (song.playCount) {
+        const plays = document.createElement("span");
+        plays.className = "row-plays";
+        plays.textContent = formatPlayCount(song.playCount);
+        rowActions.appendChild(plays);
+      }
+
+      const favBtn = document.createElement("button");
+      favBtn.className = `action-btn${isFav(song.id) ? " is-active" : ""}`;
+      favBtn.dataset.act = "fav";
+      favBtn.title = "Like";
+      setButtonIcon(favBtn, isFav(song.id) ? "#ico-heart" : "#ico-heart-outline");
+
+      const duration = document.createElement("span");
+      duration.className = "duration";
+      duration.textContent = fmt(song.duration);
+
+      const moreBtn = document.createElement("button");
+      moreBtn.className = "action-btn";
+      moreBtn.dataset.act = "more";
+      moreBtn.title = "More";
+      setButtonIcon(moreBtn, "#ico-more");
+
+      rowActions.append(favBtn, duration, moreBtn);
+      row.append(rowNum, rowArt, rowInfo, rowActions);
 
       // Click to play
-      row.querySelector(".row-title").onclick = () => playSong(song, queue);
-      row.querySelector(".row-art").onclick = () => playSong(song, queue);
+      rowTitle.onclick = () => playSong(song, queue);
+      rowArt.onclick = () => playSong(song, queue);
 
       // Artist link clicks → open artist page
       row.querySelectorAll(".artist-link").forEach(link => {
@@ -2715,10 +2953,10 @@
       });
 
       // Fav toggle
-      row.querySelector('[data-act="fav"]').onclick = (e) => { e.stopPropagation(); toggleFav(song); };
+      favBtn.onclick = (e) => { e.stopPropagation(); toggleFav(song); };
 
       // More menu
-      row.querySelector('[data-act="more"]').onclick = (e) => { e.stopPropagation(); showContextMenu(e, song, queue); };
+      moreBtn.onclick = (e) => { e.stopPropagation(); showContextMenu(e, song, queue); };
 
       return row;
     }
@@ -2889,16 +3127,10 @@
       // Update player bar UI
       dom.nowArt.src = song.image || "";
       dom.nowTitle.textContent = song.title;
-      if (song.artistIds?.length) {
-        dom.nowArtist.innerHTML = song.artistIds.map(a =>
-          `<span class="artist-link" data-artist-id="${a.id}">${a.name}</span>`
-        ).join(", ");
-        dom.nowArtist.querySelectorAll(".artist-link").forEach(link => {
-          link.onclick = (e) => { e.stopPropagation(); openArtistPage(link.dataset.artistId); };
-        });
-      } else {
-        dom.nowArtist.textContent = song.artist;
-      }
+      appendArtistLinks(dom.nowArtist, song.artistIds, song.artist, (e, artistId) => {
+        e.stopPropagation();
+        openArtistPage(artistId);
+      });
       dom.totalTime.textContent = fmt(song.duration);
       updatePlayBtn(true);
       updateNowFav();
@@ -3418,7 +3650,7 @@
           saveAuth();
           audio.pause();
           audio.src = "";
-          state.favorites = []; state.playlists = []; state.playlistSongs = []; state.downloads = [];
+          state.favorites = []; state.playlists = []; state.playlistSongs = {}; state.downloads = [];
           state.currentQueue = []; state.currentIndex = -1;
           updateAuthUI();
           updatePlayBtn(false);
@@ -3496,39 +3728,38 @@
       const artist = album.artists?.primary?.map(a => a.name).join(", ") || album.description || "";
       const card = document.createElement("div");
       card.className = "card";
-      card.innerHTML = `
-        <div class="card-art">
-          ${img ? `<img src="${img}" alt="${name}" loading="lazy">` : ""}
-          <div class="card-play"><svg><use href="#ico-play"/></svg></div>
-        </div>
-        <div class="card-title">${name}</div>
-        <div class="card-sub">${album.year || ""} ${artist ? "· " + artist : ""}</div>
-      `;
+      const art = document.createElement("div");
+      art.className = "card-art";
+      if (img) {
+        const artImg = document.createElement("img");
+        artImg.src = img;
+        artImg.alt = name;
+        artImg.loading = "lazy";
+        art.appendChild(artImg);
+      }
+      const play = document.createElement("div");
+      play.className = "card-play";
+      play.appendChild(makeSvgIcon("#ico-play", 20));
+      art.appendChild(play);
+      const title = document.createElement("div");
+      title.className = "card-title";
+      title.textContent = name;
+      const sub = document.createElement("div");
+      sub.className = "card-sub";
+      sub.textContent = `${album.year || ""}${artist ? `${album.year ? " - " : ""}${artist}` : ""}`;
+      card.append(art, title, sub);
       card.onclick = async () => {
         toast("Loading album...");
         try {
           const album_data = await fetchAlbumSongs(album.id);
           if (album_data.songs.length) {
-            dom.playlistViewHeader.innerHTML = `
-              <div style="display:flex;align-items:center;gap:24px;">
-                <div style="width:80px;height:80px;border-radius:4px;background:var(--bg-elevated);overflow:hidden;">
-                  ${album_data.image ? `<img src="${album_data.image}" style="width:100%;height:100%;object-fit:cover" alt="">` : ""}
-                </div>
-                <div>
-                  <p style="font-size:0.75rem;font-weight:600;text-transform:uppercase;color:var(--text-sub)">Album</p>
-                  <h2>${album_data.name}</h2>
-                  <p style="color:var(--text-sub);font-size:0.85rem">${album_data.songs.length} songs</p>
-                </div>
-              </div>
-              <div class="pl-header-controls">
-                <button class="pl-shuffle-play" id="plViewPlay" title="Play"><svg><use href="#ico-play"/></svg></button>
-                <button class="ctrl-btn" id="plViewShuffle" title="Shuffle play" style="opacity:1"><svg style="width:20px;height:20px;fill:currentColor"><use href="#ico-shuffle"/></svg></button>
-              </div>
-            `;
+            clearChildren(dom.playlistViewHeader);
+            const header = makePlaylistHeader("Album", album_data.name, album_data.songs.length, album_data.image);
+            dom.playlistViewHeader.appendChild(header.element);
             renderSongList(dom.playlistViewSongs, album_data.songs, album_data.songs);
             switchPage("playlistView");
-            $("plViewPlay").onclick = () => playSongAt(0, album_data.songs);
-            $("plViewShuffle").onclick = () => {
+            header.playBtn.onclick = () => playSongAt(0, album_data.songs);
+            header.shuffleBtn.onclick = () => {
               const shuffled = [...album_data.songs];
               for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
               state.shuffleOn = true; dom.shuffleBtn.classList.add("is-active");
@@ -3539,7 +3770,6 @@
       };
       return card;
     }
-
     let doSearch = debounce(async (query) => {
       if (!query.trim()) {
         dom.searchResults.innerHTML = "";
@@ -3652,17 +3882,28 @@
         const favBtn = row.querySelector('[data-act="fav"]');
         if (favBtn) {
           favBtn.classList.toggle("is-active", isFav(songId));
-          favBtn.innerHTML = `<svg style="width:16px;height:16px;fill:currentColor"><use href="${isFav(songId) ? "#ico-heart" : "#ico-heart-outline"}"/></svg>`;
+          setButtonIcon(favBtn, isFav(songId) ? "#ico-heart" : "#ico-heart-outline");
         }
         // Equalizer bars
         const numEl = row.querySelector(".row-num");
         if (numEl) {
           const idx = numEl.dataset.idx || "";
+          clearChildren(numEl);
           if (isActive && !audio.paused) {
-            numEl.innerHTML = `<div class="eq-bars"><span></span><span></span><span></span></div><span class="hover-play"><svg style="width:14px;height:14px;fill:currentColor"><use href="#ico-play"/></svg></span>`;
+            const eqBars = document.createElement("div");
+            eqBars.className = "eq-bars";
+            eqBars.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+            numEl.appendChild(eqBars);
           } else {
-            numEl.innerHTML = `<span class="num-text">${idx}</span><span class="hover-play"><svg style="width:14px;height:14px;fill:currentColor"><use href="#ico-play"/></svg></span>`;
+            const numText = document.createElement("span");
+            numText.className = "num-text";
+            numText.textContent = idx;
+            numEl.appendChild(numText);
           }
+          const hoverPlay = document.createElement("span");
+          hoverPlay.className = "hover-play";
+          hoverPlay.appendChild(makeSvgIcon("#ico-play", 14));
+          numEl.appendChild(hoverPlay);
         }
       });
     }
@@ -3681,19 +3922,19 @@
 
     // ── HOME: SPOTIFY-STYLE SECTIONS ──
     const HOME_SECTIONS = [
-      { title: "Trending 2026", queries: [
-        { q: "trending songs india 2026" },
-        { q: "love songs trending 2026" },
-        { q: "india superhits awards 2026" },
+      { title: `Trending ${CURRENT_YEAR}`, queries: [
+        { q: `trending songs india ${CURRENT_YEAR}` },
+        { q: `love songs trending ${CURRENT_YEAR}` },
+        { q: `india superhits awards ${CURRENT_YEAR}` },
         { q: "india superhits top 50" },
         { q: "chennai hot 50" }
       ]},
       { title: "Tamil \u2022 Latest", queries: [
         { q: "trending tamil songs" },
         { q: "trending pop tamil" },
-        { q: "chartbusters 2025 tamil" },
-        { q: "dance hits 2025 tamil" },
-        { q: "romantic hits 2025 tamil" }
+        { q: `chartbusters ${CURRENT_YEAR} tamil` },
+        { q: `dance hits ${CURRENT_YEAR} tamil` },
+        { q: `romantic hits ${CURRENT_YEAR} tamil` }
       ]},
       { title: "Tamil \u2022 All Time", queries: [
         { q: "anirudh ravichander tamil" },
@@ -3703,11 +3944,11 @@
         { q: "most streamed love songs tamil" }
       ]},
       { title: "Hindi \u2022 Hits", queries: [
-        { q: "chartbusters 2025 hindi" },
-        { q: "romantic hits 2025 hindi" },
-        { q: "dance hits 2025 hindi" },
-        { q: "pop hits 2025 hindi" },
-        { q: "hip hop hits 2025 hindi" }
+        { q: `chartbusters ${CURRENT_YEAR} hindi` },
+        { q: `romantic hits ${CURRENT_YEAR} hindi` },
+        { q: `dance hits ${CURRENT_YEAR} hindi` },
+        { q: `pop hits ${CURRENT_YEAR} hindi` },
+        { q: `hip hop hits ${CURRENT_YEAR} hindi` }
       ]},
       { title: "Hindi \u2022 Chill & Classics", queries: [
         { q: "chill maaro lo-fi mix" },
@@ -3717,29 +3958,56 @@
         { q: "retro chill" }
       ]},
       { title: "English \u2022 Global", queries: [
-        { q: "chartbusters 2025 international" },
-        { q: "pop hits 2025 english" },
-        { q: "dance hits 2025 english" },
-        { q: "edm hits 2025 english" },
-        { q: "kpop hits 2025" }
+        { q: `chartbusters ${CURRENT_YEAR} international` },
+        { q: `pop hits ${CURRENT_YEAR} english` },
+        { q: `dance hits ${CURRENT_YEAR} english` },
+        { q: `edm hits ${CURRENT_YEAR} english` },
+        { q: `kpop hits ${CURRENT_YEAR}` }
       ]},
       { title: "Mood & Vibes", queries: [
         { q: "chill karo na" },
         { q: "workout gym motivation hindi" },
         { q: "sad love tamil" },
-        { q: "party songs 2025" },
+        { q: `party songs ${CURRENT_YEAR}` },
         { q: "travel tunes tamil" }
       ]}
     ];
 
     const _seenPlaylistIds = new Set();
+    let homeSectionsObserver = null;
+    let homeSectionLoadChain = Promise.resolve();
+
+    function getHomeSectionsCache() {
+      return safeParse(localStorage.getItem(HOME_SECTIONS_CACHE_KEY), {});
+    }
+
+    function setHomeSectionsCache(cache) {
+      localStorage.setItem(HOME_SECTIONS_CACHE_KEY, JSON.stringify(cache));
+    }
+
+    function getHomeSectionCacheKey(section) {
+      return `${section.title}::${section.queries.map(q => q.q).join("|")}`;
+    }
+
+    function getCachedHomeSection(section) {
+      const cache = getHomeSectionsCache();
+      const entry = cache[getHomeSectionCacheKey(section)];
+      if (!entry || Date.now() - entry.ts > CACHE_TTL || !Array.isArray(entry.cards)) return null;
+      return entry.cards;
+    }
+
+    function cacheHomeSection(section, cards) {
+      const cache = getHomeSectionsCache();
+      cache[getHomeSectionCacheKey(section)] = { ts: Date.now(), cards };
+      setHomeSectionsCache(cache);
+    }
+
     async function fetchPlaylistCard(query) {
       try {
         const search = await apiFetch(`/search/playlists?query=${encodeURIComponent(query)}&limit=5`);
         const results = search?.data?.results || [];
-        const result = results.find(r => !_seenPlaylistIds.has(r.id)) || results[0];
+        const result = results[0];
         if (!result) return null;
-        _seenPlaylistIds.add(result.id);
         const imgs = Array.isArray(result.image) ? result.image : [];
         return {
           id: result.id,
@@ -3748,6 +4016,82 @@
           songCount: result.songCount || 0
         };
       } catch { return null; }
+    }
+
+    async function fetchHomeSectionCards(section) {
+      const cached = getCachedHomeSection(section);
+      if (cached) {
+        const availableCached = cached.filter(card => card && !_seenPlaylistIds.has(card.id));
+        if (availableCached.length) return availableCached;
+      }
+      const queryResults = await Promise.all(section.queries.map(q => fetchPlaylistCard(q.q)));
+      const seenIds = new Set(_seenPlaylistIds);
+      const cards = [];
+      queryResults.forEach(card => {
+        if (card && !seenIds.has(card.id)) {
+          seenIds.add(card.id);
+          cards.push(card);
+        }
+      });
+      cacheHomeSection(section, cards);
+      return cards;
+    }
+
+    function renderHomeSection(section, cards) {
+      const uniqueCards = cards.filter(card => {
+        if (!card || _seenPlaylistIds.has(card.id)) return false;
+        _seenPlaylistIds.add(card.id);
+        return true;
+      });
+      if (!uniqueCards.length) return null;
+      const sectionEl = document.createElement("div");
+      sectionEl.style.marginBottom = "36px";
+      const header = document.createElement("div");
+      header.className = "section-header";
+      const title = document.createElement("h3");
+      title.textContent = section.title;
+      header.appendChild(title);
+      const grid = document.createElement("div");
+      grid.className = "card-grid";
+      uniqueCards.forEach(item => grid.appendChild(renderHomeCard(item)));
+      sectionEl.append(header, grid);
+      return sectionEl;
+    }
+
+    async function loadDeferredHomeSection(placeholder, section) {
+      if (!placeholder?.isConnected || placeholder.dataset.loaded === "1") return;
+      placeholder.dataset.loaded = "1";
+      try {
+        const cards = await fetchHomeSectionCards(section);
+        const sectionEl = renderHomeSection(section, cards);
+        if (sectionEl) placeholder.replaceWith(sectionEl);
+        else placeholder.remove();
+      } catch {
+        placeholder.remove();
+      }
+    }
+
+    function setupHomeSectionsObserver(placeholders) {
+      homeSectionsObserver?.disconnect();
+      homeSectionsObserver = null;
+      if (!placeholders.length) return;
+      if (!("IntersectionObserver" in window)) {
+        homeSectionLoadChain = placeholders.reduce(
+          (chain, { placeholder, section }) => chain.then(() => loadDeferredHomeSection(placeholder, section)),
+          Promise.resolve()
+        );
+        return;
+      }
+      homeSectionsObserver = new IntersectionObserver((entries) => {
+        entries.filter(entry => entry.isIntersecting).forEach(entry => {
+          const placeholder = entry.target;
+          const index = Number(placeholder.dataset.sectionIndex);
+          const section = HOME_SECTIONS[index];
+          homeSectionsObserver?.unobserve(placeholder);
+          homeSectionLoadChain = homeSectionLoadChain.then(() => loadDeferredHomeSection(placeholder, section));
+        });
+      }, { root: dom.mainContent, rootMargin: "300px 0px" });
+      placeholders.forEach(({ placeholder }) => homeSectionsObserver.observe(placeholder));
     }
 
     async function fetchAndPlayPlaylist(playlistId) {
@@ -3759,26 +4103,13 @@
           // Open in playlist view style
           const plName = decode(pl?.data?.name || "Playlist");
           const cover = songs[0]?.image || "";
-          dom.playlistViewHeader.innerHTML = `
-            <div style="display:flex;align-items:center;gap:24px;">
-              <div style="width:80px;height:80px;border-radius:4px;background:var(--bg-elevated);overflow:hidden;">
-                ${cover ? `<img src="${cover}" style="width:100%;height:100%;object-fit:cover" alt="">` : ""}
-              </div>
-              <div>
-                <p style="font-size:0.75rem;font-weight:600;text-transform:uppercase;color:var(--text-sub)">Playlist</p>
-                <h2>${plName}</h2>
-                <p style="color:var(--text-sub);font-size:0.85rem">${songs.length} songs</p>
-              </div>
-            </div>
-            <div class="pl-header-controls">
-              <button class="pl-shuffle-play" id="plViewPlay" title="Play"><svg><use href="#ico-play"/></svg></button>
-              <button class="ctrl-btn" id="plViewShuffle" title="Shuffle play" style="opacity:1"><svg style="width:20px;height:20px;fill:currentColor"><use href="#ico-shuffle"/></svg></button>
-            </div>
-          `;
+          clearChildren(dom.playlistViewHeader);
+          const header = makePlaylistHeader("Playlist", plName, songs.length, cover);
+          dom.playlistViewHeader.appendChild(header.element);
           renderSongList(dom.playlistViewSongs, songs, songs);
           switchPage("playlistView");
-          $("plViewPlay").onclick = () => playSongAt(0, songs);
-          $("plViewShuffle").onclick = () => {
+          header.playBtn.onclick = () => playSongAt(0, songs);
+          header.shuffleBtn.onclick = () => {
             const shuffled = [...songs];
             for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
             state.shuffleOn = true; dom.shuffleBtn.classList.add("is-active");
@@ -3793,14 +4124,26 @@
     function renderHomeCard(item) {
       const card = document.createElement("div");
       card.className = "card";
-      card.innerHTML = `
-        <div class="card-art">
-          ${item.image ? `<img src="${item.image}" alt="${item.title}" loading="lazy">` : ""}
-          <div class="card-play"><svg><use href="#ico-play"/></svg></div>
-        </div>
-        <div class="card-title">${item.title}</div>
-        <div class="card-sub">${item.songCount ? item.songCount + " songs" : "Playlist"}</div>
-      `;
+      const art = document.createElement("div");
+      art.className = "card-art";
+      if (item.image) {
+        const img = document.createElement("img");
+        img.src = item.image;
+        img.alt = item.title;
+        img.loading = "lazy";
+        art.appendChild(img);
+      }
+      const play = document.createElement("div");
+      play.className = "card-play";
+      play.appendChild(makeSvgIcon("#ico-play", 20));
+      art.appendChild(play);
+      const title = document.createElement("div");
+      title.className = "card-title";
+      title.textContent = item.title;
+      const sub = document.createElement("div");
+      sub.className = "card-sub";
+      sub.textContent = item.songCount ? `${item.songCount} songs` : "Playlist";
+      card.append(art, title, sub);
       card.onclick = () => fetchAndPlayPlaylist(item.id);
       return card;
     }
@@ -3809,28 +4152,24 @@
       showSkeleton();
       updateGreeting();
       _seenPlaylistIds.clear();
+      homeSectionsObserver?.disconnect();
+      homeSectionsObserver = null;
       const container = $("homeSections");
       container.innerHTML = "";
 
-      // Load all sections in parallel
-      const sectionPromises = HOME_SECTIONS.map(async (section) => {
-        const cards = await Promise.all(section.queries.map(q => fetchPlaylistCard(q.q)));
-        return { title: section.title, cards: cards.filter(Boolean) };
-      });
-
       try {
-        const sections = await Promise.all(sectionPromises);
-        sections.forEach(section => {
-          if (!section.cards.length) return;
-          const sectionEl = document.createElement("div");
-          sectionEl.style.marginBottom = "36px";
-          sectionEl.innerHTML = `<div class="section-header"><h3>${section.title}</h3></div>`;
-          const grid = document.createElement("div");
-          grid.className = "card-grid";
-          section.cards.forEach(item => grid.appendChild(renderHomeCard(item)));
-          sectionEl.appendChild(grid);
-          container.appendChild(sectionEl);
+        const initialSections = HOME_SECTIONS.slice(0, HOME_SECTIONS_INITIAL_COUNT);
+        const initialCards = await Promise.all(initialSections.map(section => fetchHomeSectionCards(section)));
+        initialSections.forEach((section, index) => {
+          const sectionEl = renderHomeSection(section, initialCards[index]);
+          if (sectionEl) container.appendChild(sectionEl);
         });
+        const placeholders = HOME_SECTIONS.slice(HOME_SECTIONS_INITIAL_COUNT).map((section, offset) => {
+          const placeholder = makeHomeSectionPlaceholder(HOME_SECTIONS_INITIAL_COUNT + offset);
+          container.appendChild(placeholder);
+          return { placeholder, section };
+        });
+        setupHomeSectionsObserver(placeholders);
         showHome();
       } catch (err) {
         showError(err.message);
@@ -3838,11 +4177,12 @@
     }
 
     async function loadInitial(force = false) {
+      if (force) localStorage.removeItem(HOME_SECTIONS_CACHE_KEY);
       await loadHomeSections();
     }
 
     dom.retryBtn.onclick = () => loadInitial(true);
-    dom.topbarRefresh.onclick = () => { localStorage.removeItem(CACHE_KEY); loadInitial(true); };
+    dom.topbarRefresh.onclick = () => { localStorage.removeItem(CACHE_KEY); localStorage.removeItem(HOME_SECTIONS_CACHE_KEY); loadInitial(true); };
 
     // ── CROSSFADE ──
     state.crossfade = true;
@@ -3922,12 +4262,27 @@
       recent.slice(0, 8).forEach(song => {
         const card = document.createElement("div");
         card.className = "recent-card";
-        card.innerHTML = `${song.image ? `<img src="${song.image}" alt="" loading="lazy">` : '<div style="width:56px;height:56px;background:var(--bg-elevated)"></div>'}<span class="rc-title">${song.title}</span>`;
+        if (song.image) {
+          const img = document.createElement("img");
+          img.src = song.image;
+          img.alt = "";
+          img.loading = "lazy";
+          card.appendChild(img);
+        } else {
+          const fallback = document.createElement("div");
+          fallback.style.width = "56px";
+          fallback.style.height = "56px";
+          fallback.style.background = "var(--bg-elevated)";
+          card.appendChild(fallback);
+        }
+        const title = document.createElement("span");
+        title.className = "rc-title";
+        title.textContent = song.title;
+        card.appendChild(title);
         card.onclick = () => playSong(song, [song]);
         grid.appendChild(card);
       });
     }
-
     // ── SEARCH HISTORY ──
     function getSearchHistory() { return safeParse(localStorage.getItem(userKey("searchHistory")), []); }
     function addSearchHistory(query) {
@@ -4012,16 +4367,10 @@
       $("npArt").src = song.image || "";
       $("npTitle").textContent = song.title;
       // Clickable artist names in now playing
-      if (song.artistIds?.length) {
-        $("npArtist").innerHTML = song.artistIds.map(a =>
-          `<span class="artist-link" data-artist-id="${a.id}">${a.name}</span>`
-        ).join(", ");
-        $("npArtist").querySelectorAll(".artist-link").forEach(link => {
-          link.onclick = () => { closeNowPlaying(); openArtistPage(link.dataset.artistId); };
-        });
-      } else {
-        $("npArtist").textContent = song.artist;
-      }
+      appendArtistLinks($("npArtist"), song.artistIds, song.artist, (_e, artistId) => {
+        closeNowPlaying();
+        openArtistPage(artistId);
+      });
       $("npTotal").textContent = fmt(song.duration);
       updateNpFav();
       updateNpControls();
@@ -4091,7 +4440,7 @@
         if (currentLyricsId !== song.id) return;
         if (data?.data?.lyrics) {
           lyricsText.className = "lyrics-text";
-          lyricsText.innerHTML = data.data.lyrics;
+          lyricsText.textContent = htmlToPlainText(data.data.lyrics);
         } else {
           lyricsText.className = "lyrics-text loading";
           lyricsText.textContent = "No lyrics available for this song";
@@ -4281,22 +4630,22 @@
 
     // ── BROWSE CATEGORIES ──
     const BROWSE_CATS = [
-      { label: "Tamil", q: "tamil hits 2025", color: "#E13300" },
-      { label: "Pop", q: "pop hits 2025", color: "#8400E7" },
-      { label: "Hip-Hop", q: "hip hop rap 2025", color: "#BA5D07" },
-      { label: "Bollywood", q: "bollywood hits 2025", color: "#E8115B" },
-      { label: "K-Pop", q: "kpop hits 2025", color: "#148A08" },
+      { label: "Tamil", q: `tamil hits ${CURRENT_YEAR}`, color: "#E13300" },
+      { label: "Pop", q: `pop hits ${CURRENT_YEAR}`, color: "#8400E7" },
+      { label: "Hip-Hop", q: `hip hop rap ${CURRENT_YEAR}`, color: "#BA5D07" },
+      { label: "Bollywood", q: `bollywood hits ${CURRENT_YEAR}`, color: "#E8115B" },
+      { label: "K-Pop", q: `kpop hits ${CURRENT_YEAR}`, color: "#148A08" },
       { label: "Romance", q: "love songs romantic", color: "#D84000" },
-      { label: "EDM", q: "edm dance electronic 2025", color: "#0D73EC" },
+      { label: "EDM", q: `edm dance electronic ${CURRENT_YEAR}`, color: "#0D73EC" },
       { label: "Chill", q: "chill vibes relaxing", color: "#537AA1" },
       { label: "Workout", q: "workout gym motivation", color: "#1E3264" },
-      { label: "R&B", q: "rnb soul songs 2025", color: "#DC148C" },
-      { label: "Rock", q: "top rock songs 2025", color: "#E91429" },
-      { label: "Latin", q: "latin reggaeton 2025", color: "#477D95" },
-      { label: "Arabic", q: "arabic top songs 2025", color: "#509BF5" },
-      { label: "Afrobeats", q: "afrobeats top songs 2025", color: "#A56752" },
+      { label: "R&B", q: `rnb soul songs ${CURRENT_YEAR}`, color: "#DC148C" },
+      { label: "Rock", q: `top rock songs ${CURRENT_YEAR}`, color: "#E91429" },
+      { label: "Latin", q: `latin reggaeton ${CURRENT_YEAR}`, color: "#477D95" },
+      { label: "Arabic", q: `arabic top songs ${CURRENT_YEAR}`, color: "#509BF5" },
+      { label: "Afrobeats", q: `afrobeats top songs ${CURRENT_YEAR}`, color: "#A56752" },
       { label: "Jazz", q: "jazz songs classics", color: "#2D46B9" },
-      { label: "Party", q: "party songs 2025", color: "#E1118C" },
+      { label: "Party", q: `party songs ${CURRENT_YEAR}`, color: "#E1118C" },
       { label: "Sad", q: "sad songs emotional", color: "#608108" },
       { label: "90s", q: "90s hits songs", color: "#7358FF" },
       { label: "Anirudh", q: "Anirudh Ravichander songs", color: "#E13300" },
@@ -4315,7 +4664,9 @@
         const card = document.createElement("div");
         card.className = "browse-card";
         card.style.background = cat.color;
-        card.innerHTML = `<h4>${cat.label}</h4>`;
+        const title = document.createElement("h4");
+        title.textContent = cat.label;
+        card.appendChild(title);
         card.onclick = () => {
           dom.searchInput.value = cat.q;
           dom.searchClear.classList.remove("hidden");
@@ -4365,9 +4716,9 @@
     async function openArtistPage(artistId) {
       if (!artistId) return;
       switchPage("artist");
-      $("artistHeader").innerHTML = '<div style="text-align:center;padding:48px;color:var(--text-sub)">Loading artist...</div>';
-      $("artistControls").innerHTML = "";
-      $("artistContent").innerHTML = "";
+      renderStatusMessage($("artistHeader"), "Loading artist...", "Please wait");
+      clearChildren($("artistControls"));
+      clearChildren($("artistContent"));
 
       try {
         const [artist, songs, albums] = await Promise.all([
@@ -4383,19 +4734,52 @@
         const followers = artist.followerCount ? formatPlayCount(artist.followerCount) + " followers" : "";
         const isVerified = artist.isVerified || false;
 
-        // Header
-        $("artistHeader").innerHTML = `
-          <div class="artist-avatar">
-            ${img ? `<img src="${img}" alt="${name}">` : `<div style="width:100%;height:100%;background:var(--bg-elevated);display:grid;place-items:center;font-size:3rem;color:var(--text-sub)">${name[0]}</div>`}
-          </div>
-          <div class="artist-meta">
-            ${isVerified ? '<span class="verified-badge"><svg style="width:20px;height:20px;fill:var(--accent)" viewBox="0 0 24 24"><path d="M12 1l3.09 4.26L20 6.27l-2.18 4.32L19.64 16l-4.73 1.52L12 22l-2.91-4.48L4.36 16l1.82-5.41L4 6.27l4.91-1.01z"/></svg> Verified Artist</span>' : ''}
-            <h1>${name}</h1>
-            <div class="artist-stats">${followers}</div>
-          </div>
-        `;
+        const header = $("artistHeader");
+        clearChildren(header);
+        const avatar = document.createElement("div");
+        avatar.className = "artist-avatar";
+        if (img) {
+          const avatarImg = document.createElement("img");
+          avatarImg.src = img;
+          avatarImg.alt = name;
+          avatar.appendChild(avatarImg);
+        } else {
+          const fallback = document.createElement("div");
+          fallback.style.width = "100%";
+          fallback.style.height = "100%";
+          fallback.style.background = "var(--bg-elevated)";
+          fallback.style.display = "grid";
+          fallback.style.placeItems = "center";
+          fallback.style.fontSize = "3rem";
+          fallback.style.color = "var(--text-sub)";
+          fallback.textContent = name[0] || "?";
+          avatar.appendChild(fallback);
+        }
+        const meta = document.createElement("div");
+        meta.className = "artist-meta";
+        if (isVerified) {
+          const badge = document.createElement("span");
+          badge.className = "verified-badge";
+          const badgeIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          badgeIcon.setAttribute("viewBox", "0 0 24 24");
+          badgeIcon.style.width = "20px";
+          badgeIcon.style.height = "20px";
+          badgeIcon.style.fill = "var(--accent)";
+          const badgePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          badgePath.setAttribute("d", "M12 1l3.09 4.26L20 6.27l-2.18 4.32L19.64 16l-4.73 1.52L12 22l-2.91-4.48L4.36 16l1.82-5.41L4 6.27l4.91-1.01z");
+          badgeIcon.appendChild(badgePath);
+          badge.appendChild(badgeIcon);
+          badge.appendChild(document.createTextNode(" Verified Artist"));
+          meta.appendChild(badge);
+        }
+        const heading = document.createElement("h1");
+        heading.textContent = name;
+        const stats = document.createElement("div");
+        stats.className = "artist-stats";
+        stats.textContent = followers;
+        meta.append(heading, stats);
+        header.append(avatar, meta);
 
-        // Controls
         $("artistControls").innerHTML = `
           <button class="pl-shuffle-play" id="artistPlayAll" title="Play all"><svg><use href="#ico-play"/></svg></button>
           <button class="ctrl-btn" id="artistShuffleAll" title="Shuffle" style="opacity:1"><svg style="width:20px;height:20px;fill:currentColor"><use href="#ico-shuffle"/></svg></button>
@@ -4411,46 +4795,50 @@
           };
         }
 
-        // Content
-        let contentHtml = "";
-
-        // Top Songs
+        const content = $("artistContent");
+        clearChildren(content);
         if (songs.length) {
-          contentHtml += '<div class="artist-section"><h3>Popular</h3><div class="song-list" id="artistSongsList"></div></div>';
+          const songsSection = document.createElement("div");
+          songsSection.className = "artist-section";
+          const songsTitle = document.createElement("h3");
+          songsTitle.textContent = "Popular";
+          const list = document.createElement("div");
+          list.className = "song-list";
+          songs.slice(0, 10).forEach((s, i) => list.appendChild(makeSongRow(s, i, songs)));
+          songsSection.append(songsTitle, list);
+          content.appendChild(songsSection);
         }
-
-        // Albums
         if (albums.length) {
-          contentHtml += '<div class="artist-section"><h3>Albums</h3><div class="search-albums-grid" id="artistAlbumsGrid"></div></div>';
+          const albumsSection = document.createElement("div");
+          albumsSection.className = "artist-section";
+          const albumsTitle = document.createElement("h3");
+          albumsTitle.textContent = "Albums";
+          const grid = document.createElement("div");
+          grid.className = "search-albums-grid";
+          albums.slice(0, 12).forEach(a => grid.appendChild(renderSearchAlbumCard(a)));
+          albumsSection.append(albumsTitle, grid);
+          content.appendChild(albumsSection);
         }
-
-        // Bio
         if (artist.bio?.length) {
-          const bioText = artist.bio.map(b => b.text || b).join(" ").replace(/<[^>]+>/g, "");
+          const bioText = htmlToPlainText(artist.bio.map(b => b.text || b).join(" "));
           if (bioText.trim()) {
-            contentHtml += `<div class="artist-section"><h3>About</h3><p style="color:var(--text-sub);line-height:1.6;max-width:640px">${bioText}</p></div>`;
+            const aboutSection = document.createElement("div");
+            aboutSection.className = "artist-section";
+            const aboutTitle = document.createElement("h3");
+            aboutTitle.textContent = "About";
+            const bio = document.createElement("p");
+            bio.style.color = "var(--text-sub)";
+            bio.style.lineHeight = "1.6";
+            bio.style.maxWidth = "640px";
+            bio.textContent = bioText;
+            aboutSection.append(aboutTitle, bio);
+            content.appendChild(aboutSection);
           }
         }
-
-        $("artistContent").innerHTML = contentHtml;
-
-        // Render top songs
-        if (songs.length) {
-          const list = $("artistSongsList");
-          songs.slice(0, 10).forEach((s, i) => list.appendChild(makeSongRow(s, i, songs)));
-        }
-
-        // Render albums
-        if (albums.length) {
-          const grid = $("artistAlbumsGrid");
-          albums.slice(0, 12).forEach(a => grid.appendChild(renderSearchAlbumCard(a)));
-        }
-
       } catch (err) {
-        $("artistHeader").innerHTML = `<div class="empty-state"><h3>Failed to load artist</h3><p>${err.message || ""}</p></div>`;
+        renderStatusMessage($("artistHeader"), "Failed to load artist", err.message || "");
       }
     }
-
     // ── ARTIST SEARCH CARDS ──
     function renderArtistCard(artist) {
       const imgs = Array.isArray(artist.image) ? artist.image : [];
@@ -4458,11 +4846,34 @@
       const name = decode(artist.name || artist.title || "");
       const card = document.createElement("div");
       card.className = "artist-card";
-      card.innerHTML = `
-        <div class="ac-img">${img ? `<img src="${img}" alt="${name}" loading="lazy">` : `<div style="width:100%;height:100%;background:var(--bg-elevated);border-radius:50%;display:grid;place-items:center;font-size:1.5rem;color:var(--text-sub)">${name[0] || "?"}</div>`}</div>
-        <div class="ac-name">${name}</div>
-        <div class="ac-type">Artist</div>
-      `;
+      const imageWrap = document.createElement("div");
+      imageWrap.className = "ac-img";
+      if (img) {
+        const imageEl = document.createElement("img");
+        imageEl.src = img;
+        imageEl.alt = name;
+        imageEl.loading = "lazy";
+        imageWrap.appendChild(imageEl);
+      } else {
+        const fallback = document.createElement("div");
+        fallback.style.width = "100%";
+        fallback.style.height = "100%";
+        fallback.style.background = "var(--bg-elevated)";
+        fallback.style.borderRadius = "50%";
+        fallback.style.display = "grid";
+        fallback.style.placeItems = "center";
+        fallback.style.fontSize = "1.5rem";
+        fallback.style.color = "var(--text-sub)";
+        fallback.textContent = name[0] || "?";
+        imageWrap.appendChild(fallback);
+      }
+      const nameEl = document.createElement("div");
+      nameEl.className = "ac-name";
+      nameEl.textContent = name;
+      const typeEl = document.createElement("div");
+      typeEl.className = "ac-type";
+      typeEl.textContent = "Artist";
+      card.append(imageWrap, nameEl, typeEl);
       card.onclick = () => openArtistPage(artist.id);
       return card;
     }
@@ -4511,3 +4922,5 @@
   </script>
 </body>
 </html>
+
+
