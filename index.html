@@ -2702,11 +2702,34 @@
       return { songs: songs.map(enrichSong), albums };
     }
 
+    // The /albums and /playlists endpoints sometimes return songs without a
+    // playable URL (downloadUrl missing/empty). /songs/{id} has the full
+    // record, so fetch the missing ones individually in parallel and merge
+    // them back in. Returns the enriched song list.
+    async function enrichMissingSrc(rawSongs) {
+      const missing = rawSongs.filter(s => !s.src && s.id);
+      if (!missing.length) return rawSongs;
+      const byId = new Map();
+      await Promise.all(missing.map(async (s) => {
+        try {
+          const r = await apiFetch(`/songs/${s.id}`);
+          const raw = Array.isArray(r?.data) ? r.data[0] : r?.data;
+          if (raw) {
+            const n = normalizeSong(raw);
+            if (n.src) byId.set(n.id, n);
+          }
+        } catch {}
+      }));
+      return rawSongs.map(s => byId.get(s.id) || s);
+    }
+
     async function fetchAndPlayAlbum(albumId) {
       try {
         const al = await apiFetch(`/albums?id=${encodeURIComponent(albumId)}`);
         const data = al?.data || {};
-        const songs = (data.songs || []).map(normalizeSong).filter(s => s.src).map(enrichSong);
+        let rawSongs = (data.songs || []).map(normalizeSong);
+        rawSongs = await enrichMissingSrc(rawSongs);
+        const songs = rawSongs.filter(s => s.src).map(enrichSong);
         if (!songs.length) { toast("No playable songs in album"); return; }
         state.songs = songs;
         const imgs = Array.isArray(data.image) ? data.image : [];
@@ -3840,7 +3863,9 @@
     async function fetchAndPlayPlaylist(playlistId) {
       try {
         const pl = await apiFetch(`/playlists?id=${encodeURIComponent(playlistId)}`);
-        const songs = (pl?.data?.songs || []).map(normalizeSong).filter(s => s.src).map(enrichSong);
+        let rawSongs = (pl?.data?.songs || []).map(normalizeSong);
+        rawSongs = await enrichMissingSrc(rawSongs);
+        const songs = rawSongs.filter(s => s.src).map(enrichSong);
         if (songs.length) {
           state.songs = songs;
           // Open in playlist view style
