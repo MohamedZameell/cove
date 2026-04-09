@@ -2056,7 +2056,38 @@
 
     const CACHE_KEY = "isai_cache_v3";
     const AUTH_KEY = "isai_auth_v1";
+    const LOC_KEY = "isai_location_v1";
     const CACHE_TTL = 3600000;
+
+    // Map of country (and Indian states) to JioSaavn language tags, ordered by preference.
+    // Used to bias search results so a Tamil-Nadu user gets Tamil songs first when they
+    // type a generic word like "love" or "kaadhal", while a UK user gets English first.
+    const LANG_BY_REGION = {
+      "IN:Tamil Nadu": ["tamil", "english", "hindi"],
+      "IN:Kerala": ["malayalam", "tamil", "hindi", "english"],
+      "IN:Karnataka": ["kannada", "hindi", "english", "tamil"],
+      "IN:Andhra Pradesh": ["telugu", "hindi", "english"],
+      "IN:Telangana": ["telugu", "hindi", "english"],
+      "IN:Maharashtra": ["marathi", "hindi", "english"],
+      "IN:Punjab": ["punjabi", "hindi", "english"],
+      "IN:West Bengal": ["bengali", "hindi", "english"],
+      "IN:Gujarat": ["gujarati", "hindi", "english"],
+      "IN:Odisha": ["odia", "hindi", "english"],
+      "IN:Assam": ["assamese", "hindi", "english"],
+      "IN:Rajasthan": ["rajasthani", "hindi", "english"],
+      "IN:Haryana": ["haryanvi", "hindi", "english"],
+      "IN": ["hindi", "english"],
+      "PK": ["urdu", "punjabi", "hindi", "english"],
+      "BD": ["bengali", "hindi", "english"],
+      "LK": ["tamil", "english", "hindi"],
+      "NP": ["hindi", "english"],
+      "AE": ["english", "hindi"],
+      "SA": ["english", "hindi"],
+      "US": ["english"],
+      "GB": ["english"],
+      "CA": ["english"],
+      "AU": ["english"]
+    };
 
     function userKey(key) { return state.user ? `isai_${state.user.email}_${key}` : `isai_guest_${key}`; }
 
@@ -2104,7 +2135,9 @@
       viewingPlaylist: null,
       volume: 1,
       pageHistory: [],
-      pageForward: []
+      pageForward: [],
+      userLangs: [],         // preferred JioSaavn language tags from geolocation
+      locationStatus: "idle" // idle | requesting | granted | denied
     };
 
     // ── DOM REFS ──
@@ -2282,7 +2315,8 @@
         image: (imgs.length ? imgs[imgs.length - 1]?.url : "") || imgs[0]?.url || "",
         src: (dls.length ? dls[dls.length - 1]?.url : "") || "",
         year: s.year || "",
-        album: decode(s.album?.name || s.album || "")
+        album: decode(s.album?.name || s.album || ""),
+        language: (s.language || "").toLowerCase()
       };
     }
 
@@ -2345,14 +2379,29 @@
         } catch {}
       }));
 
-      const songs = [];
+      const songsRaw = [];
       const usedSong = new Set();
       for (const id of orderIds) {
         const s = fullById.get(id);
-        if (s && !usedSong.has(s.id)) { songs.push(s); usedSong.add(s.id); }
+        if (s && !usedSong.has(s.id)) { songsRaw.push(s); usedSong.add(s.id); }
       }
       for (const s of fullList) {
-        if (!usedSong.has(s.id)) { songs.push(s); usedSong.add(s.id); }
+        if (!usedSong.has(s.id)) { songsRaw.push(s); usedSong.add(s.id); }
+      }
+
+      // Re-rank by user's preferred languages from geolocation. Stable partition: songs
+      // matching the highest-priority language float to the top while preserving the
+      // autocomplete order within each language tier. Songs with no language match keep
+      // their relative order at the bottom.
+      let songs = songsRaw;
+      if (state.userLangs.length) {
+        const priority = new Map(state.userLangs.map((lang, i) => [lang, i]));
+        const tiered = songsRaw.map((s, i) => {
+          const tier = priority.has(s.language) ? priority.get(s.language) : state.userLangs.length;
+          return { s, tier, i };
+        });
+        tiered.sort((a, b) => a.tier - b.tier || a.i - b.i);
+        songs = tiered.map(t => t.s);
       }
 
       // ── ALBUMS (movies live here on JioSaavn — film soundtracks are albums) ──
@@ -3022,6 +3071,62 @@
       renderFavorites();
       renderDownloads();
       updateNowFav();
+      loadLocation();
+      ensureLocation(); // fire-and-forget; populates state.userLangs in background
+    }
+
+    // ── LOCATION-AWARE SEARCH ──
+    function loadLocation() {
+      const cached = safeParse(localStorage.getItem(LOC_KEY), null);
+      if (cached?.langs?.length) {
+        state.userLangs = cached.langs;
+        state.locationStatus = "granted";
+      }
+    }
+
+    function regionToLangs(countryCode, subdivision) {
+      if (!countryCode) return [];
+      const cc = countryCode.toUpperCase();
+      const sub = (subdivision || "").trim();
+      if (sub && LANG_BY_REGION[`${cc}:${sub}`]) return LANG_BY_REGION[`${cc}:${sub}`];
+      return LANG_BY_REGION[cc] || [];
+    }
+
+    async function ensureLocation() {
+      // Already have languages? Nothing to do.
+      if (state.userLangs.length) return;
+      if (state.locationStatus === "requesting" || state.locationStatus === "denied") return;
+      if (!("geolocation" in navigator)) { state.locationStatus = "denied"; return; }
+      state.locationStatus = "requesting";
+      try {
+        const pos = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: false,
+            maximumAge: 24 * 3600 * 1000,
+            timeout: 8000
+          });
+        });
+        const { latitude, longitude } = pos.coords;
+        // BigDataCloud free reverse-geocode (no key, CORS-friendly).
+        const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`);
+        const data = await r.json();
+        const langs = regionToLangs(data.countryCode, data.principalSubdivision);
+        if (langs.length) {
+          state.userLangs = langs;
+          state.locationStatus = "granted";
+          localStorage.setItem(LOC_KEY, JSON.stringify({
+            langs,
+            country: data.countryCode,
+            region: data.principalSubdivision,
+            ts: Date.now()
+          }));
+          toast(`Tuned for ${data.principalSubdivision || data.countryName || "your region"}`);
+        } else {
+          state.locationStatus = "granted"; // permission was given, just no mapping
+        }
+      } catch {
+        state.locationStatus = "denied";
+      }
     }
 
     // ── AUTH ──
@@ -3105,6 +3210,7 @@
       }
       $("searchHistoryWrap").classList.add("hidden");
       $("searchEmpty").classList.add("hidden");
+      ensureLocation(); // safe to call repeatedly; only prompts once
       const token = ++state.searchToken;
       try {
         const { songs, albums } = await searchAll(query);
