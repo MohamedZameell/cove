@@ -335,19 +335,59 @@
     .topbar-actions {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       margin-left: auto;
     }
 
-    .topbar-actions button {
+    .topbar-actions .icon-btn {
       width: 32px; height: 32px;
       border-radius: 50%;
       display: grid; place-items: center;
       color: var(--text-sub);
+      background: transparent;
       transition: all 0.15s;
     }
 
-    .topbar-actions button:hover { color: var(--text); transform: scale(1.05); }
+    .topbar-actions .icon-btn:hover { color: var(--text); transform: scale(1.05); }
+
+    /* Topbar account pill (Spotify-style) */
+    .topbar-auth {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(0,0,0,0.7);
+      color: var(--text);
+      padding: 4px 12px 4px 4px;
+      border-radius: var(--radius-full);
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      max-width: 200px;
+    }
+
+    .topbar-auth:hover { background: rgba(0,0,0,0.9); }
+    .topbar-auth:active { transform: scale(0.96); }
+
+    .topbar-auth .ta-avatar {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), #1ed760);
+      color: #000;
+      display: grid; place-items: center;
+      font-weight: 800;
+      font-size: 0.82rem;
+      flex-shrink: 0;
+      letter-spacing: -0.02em;
+    }
+
+    .topbar-auth .ta-name {
+      font-size: 0.85rem;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #fff;
+    }
 
     /* ── CONTENT PAGES ── */
     .page { display: none; padding: 0 32px 32px; }
@@ -1072,6 +1112,7 @@
     }
 
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.error { background: #b3261e; color: #fff; }
 
     /* ══════ RESPONSIVE ══════ */
 
@@ -1128,6 +1169,13 @@
       .topbar-nav { display: none; }
       .topbar .search-box { max-width: 100%; }
       .topbar .search-box input { font-size: 16px; padding: 10px 16px 10px 38px; } /* 16px prevents Safari auto-zoom */
+      /* Hide refresh on mobile to give topbar room */
+      .topbar-actions .icon-btn { display: none; }
+      /* Auth button shrinks to avatar-only on mobile */
+      .topbar-auth { padding: 0; background: transparent; max-width: none; }
+      .topbar-auth:hover { background: transparent; }
+      .topbar-auth .ta-name { display: none; }
+      .topbar-auth .ta-avatar { width: 34px; height: 34px; font-size: 0.95rem; }
 
       .page { padding: 0 16px 16px; }
 
@@ -1790,10 +1838,10 @@
           <button class="search-clear hidden" id="searchClear">&times;</button>
         </div>
         <div class="topbar-actions">
-          <button id="topbarRefresh" title="Refresh">&#8635;</button>
-          <button id="topbarAuthBtn" title="Account" style="display:flex;align-items:center;gap:8px;background:var(--bg-elevated);color:var(--text);padding:6px 12px 6px 6px;border-radius:20px;border:none;cursor:pointer;">
-            <span id="topbarAvatar" style="width:28px;height:28px;border-radius:50%;background:var(--accent);color:#000;display:grid;place-items:center;font-weight:700;font-size:0.85rem;">?</span>
-            <span id="topbarUserName" style="font-size:0.85rem;font-weight:600;">Sign in</span>
+          <button id="topbarRefresh" class="icon-btn" title="Refresh">&#8635;</button>
+          <button id="topbarAuthBtn" class="topbar-auth" title="Account" aria-label="Account">
+            <span id="topbarAvatar" class="ta-avatar">?</span>
+            <span id="topbarUserName" class="ta-name">Sign in</span>
           </button>
         </div>
       </div>
@@ -2086,6 +2134,7 @@
     const sb = (window.supabase && window.supabase.createClient)
       ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } })
       : null;
+    if (!sb) console.warn("[sync] Supabase SDK failed to load — cross-device sync disabled");
 
     const USERS = [
       { email: "zameelraja@gmail.com", hash: "330cef933befbb1c3cd545c99a403efe3ef043391eaefb0869907591352732cd", name: "Zameel" },
@@ -2273,10 +2322,11 @@
       let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
     }
 
-    function toast(msg) {
+    function toast(msg, type) {
       dom.toast.textContent = msg;
+      dom.toast.classList.toggle("error", type === "error");
       dom.toast.classList.add("show");
-      setTimeout(() => dom.toast.classList.remove("show"), 2500);
+      setTimeout(() => dom.toast.classList.remove("show"), type === "error" ? 4500 : 2500);
     }
 
     // ── STORAGE (per-user localStorage) ──
@@ -2302,20 +2352,26 @@
     // use a fixed pseudo-email so both users see them.
     const SHARED_EMAIL = "__shared__";
 
-    async function pullFromCloud() {
-      if (!sb || !state.user) return;
+    // Returns { ok: bool, plPulled, favPulled, plPushed, favPushed, error }
+    async function pullFromCloud(opts = {}) {
+      if (!sb) {
+        console.warn("[sync] supabase SDK not loaded");
+        return { ok: false, error: "Supabase SDK not loaded" };
+      }
+      if (!state.user) return { ok: false, error: "Not signed in" };
+      const email = state.user.email;
+      const result = { ok: true, plPulled: 0, favPulled: 0, plPushed: 0, favPushed: 0 };
       try {
-        const email = state.user.email;
-        // Pull this user's playlists + all shared playlists
-        const { data: pls, error: plErr } = await sb
-          .from("isai_playlists")
-          .select("*")
-          .or(`user_email.eq.${email},user_email.eq.${SHARED_EMAIL}`);
-        if (plErr) throw plErr;
+        // Two separate queries instead of OR — more reliable with email @ symbols.
+        const ownPls = await sb.from("isai_playlists").select("*").eq("user_email", email);
+        if (ownPls.error) throw ownPls.error;
+        const sharedPls = await sb.from("isai_playlists").select("*").eq("user_email", SHARED_EMAIL);
+        if (sharedPls.error) throw sharedPls.error;
+        const allPls = [...(ownPls.data || []), ...(sharedPls.data || [])];
 
         const cloudPlaylists = [];
         const cloudPlaylistSongs = {};
-        (pls || []).forEach(row => {
+        allPls.forEach(row => {
           cloudPlaylists.push({
             id: row.id,
             name: row.name,
@@ -2324,43 +2380,54 @@
           });
           cloudPlaylistSongs[row.id] = row.songs || [];
         });
+        result.plPulled = cloudPlaylists.length;
 
-        // Merge: cloud wins for IDs that exist in both, local-only IDs survive
-        const localIds = new Set(state.playlists.map(p => p.id));
+        // Merge: cloud rows replace matching local rows; local-only rows kept and pushed up.
         const cloudIds = new Set(cloudPlaylists.map(p => p.id));
-        // Keep local playlists that aren't in the cloud yet (will be pushed)
         const localOnly = state.playlists.filter(p => !cloudIds.has(p.id));
         state.playlists = [...cloudPlaylists, ...localOnly];
         cloudPlaylists.forEach(p => { state.playlistSongs[p.id] = cloudPlaylistSongs[p.id]; });
         savePlaylists();
 
-        // Pull favorites
-        const { data: favs, error: favErr } = await sb
-          .from("isai_favorites")
-          .select("*")
-          .eq("user_email", email);
-        if (favErr) throw favErr;
-        const cloudFavIds = new Set((favs || []).map(f => f.song_id));
-        const cloudFavs = (favs || []).map(f => ({ song_id: f.song_id, song: f.song }));
+        // Favorites
+        const favRes = await sb.from("isai_favorites").select("*").eq("user_email", email);
+        if (favRes.error) throw favRes.error;
+        const favs = favRes.data || [];
+        result.favPulled = favs.length;
+        const cloudFavIds = new Set(favs.map(f => f.song_id));
+        const cloudFavs = favs.map(f => ({ song_id: f.song_id, song: f.song }));
         const localOnlyFavs = state.favorites.filter(f => !cloudFavIds.has(f.song_id));
         state.favorites = [...cloudFavs, ...localOnlyFavs];
         saveFavorites();
 
-        // Push anything that was local-only so the other devices see it
-        for (const pl of localOnly) await pushPlaylistToCloud(pl);
-        for (const f of localOnlyFavs) await pushFavoriteToCloud(f);
+        // Push local-only items so the other devices see them
+        for (const pl of localOnly) {
+          const ok = await pushPlaylistToCloud(pl);
+          if (ok) result.plPushed++;
+        }
+        for (const f of localOnlyFavs) {
+          const ok = await pushFavoriteToCloud(f);
+          if (ok) result.favPushed++;
+        }
 
         renderSidebarPlaylists();
         renderFavorites();
+        updateNowFav();
+        return result;
       } catch (err) {
-        console.warn("[sync] pull failed:", err.message || err);
+        const msg = err?.message || String(err);
+        console.warn("[sync] pull failed:", msg, err);
+        result.ok = false;
+        result.error = msg;
+        if (opts.showErrors) toast(`Sync failed: ${msg}`, "error");
+        return result;
       }
     }
 
     async function pushPlaylistToCloud(pl) {
-      if (!sb || !state.user) return;
+      if (!sb || !state.user) return false;
       try {
-        await sb.from("isai_playlists").upsert({
+        const { error } = await sb.from("isai_playlists").upsert({
           id: pl.id,
           user_email: pl.is_shared ? SHARED_EMAIL : state.user.email,
           name: pl.name,
@@ -2369,45 +2436,71 @@
           songs: state.playlistSongs[pl.id] || [],
           updated_at: new Date().toISOString()
         });
-      } catch (err) { console.warn("[sync] push playlist failed:", err.message || err); }
+        if (error) throw error;
+        return true;
+      } catch (err) {
+        console.warn("[sync] push playlist failed:", err?.message || err, err);
+        return false;
+      }
     }
 
     async function deletePlaylistFromCloud(plId) {
       if (!sb) return;
-      try { await sb.from("isai_playlists").delete().eq("id", plId); }
-      catch (err) { console.warn("[sync] delete playlist failed:", err.message || err); }
+      try {
+        const { error } = await sb.from("isai_playlists").delete().eq("id", plId);
+        if (error) throw error;
+      } catch (err) { console.warn("[sync] delete playlist failed:", err?.message || err); }
     }
 
     async function pushFavoriteToCloud(fav) {
-      if (!sb || !state.user) return;
+      if (!sb || !state.user) return false;
       try {
-        await sb.from("isai_favorites").upsert({
+        const { error } = await sb.from("isai_favorites").upsert({
           user_email: state.user.email,
           song_id: fav.song_id,
           song: fav.song
         });
-      } catch (err) { console.warn("[sync] push favorite failed:", err.message || err); }
+        if (error) throw error;
+        return true;
+      } catch (err) {
+        console.warn("[sync] push favorite failed:", err?.message || err, err);
+        return false;
+      }
     }
 
     async function deleteFavoriteFromCloud(songId) {
       if (!sb || !state.user) return;
       try {
-        await sb.from("isai_favorites")
+        const { error } = await sb.from("isai_favorites")
           .delete()
           .eq("user_email", state.user.email)
           .eq("song_id", songId);
-      } catch (err) { console.warn("[sync] delete favorite failed:", err.message || err); }
+        if (error) throw error;
+      } catch (err) { console.warn("[sync] delete favorite failed:", err?.message || err); }
     }
 
     async function manualSync() {
-      if (!sb) { toast("Cloud sync unavailable"); return; }
+      if (!sb) { toast("Cloud sync unavailable — Supabase SDK didn't load", "error"); return; }
       if (!state.user) { toast("Sign in to sync"); return; }
-      toast("Syncing...");
-      // Push everything local first, then pull
-      for (const pl of state.playlists) await pushPlaylistToCloud(pl);
-      for (const f of state.favorites) await pushFavoriteToCloud(f);
-      await pullFromCloud();
-      toast("Synced");
+      toast("Syncing…");
+      // Push EVERYTHING local first to make sure cloud has the latest snapshot.
+      let pushedPls = 0, pushedFavs = 0, pushFailures = 0;
+      for (const pl of state.playlists) {
+        const ok = await pushPlaylistToCloud(pl);
+        if (ok) pushedPls++; else pushFailures++;
+      }
+      for (const f of state.favorites) {
+        const ok = await pushFavoriteToCloud(f);
+        if (ok) pushedFavs++; else pushFailures++;
+      }
+      // Now pull (which will also push anything that was local-only after the merge)
+      const result = await pullFromCloud({ showErrors: true });
+      if (!result.ok) return; // pullFromCloud already showed the error
+      const totalPushed = pushedPls + pushedFavs + result.plPushed + result.favPushed;
+      toast(`Synced — ${result.plPulled} playlists, ${result.favPulled} liked songs (pushed ${totalPushed})`);
+      if (pushFailures > 0) {
+        setTimeout(() => toast(`${pushFailures} items failed to push — check console`, "error"), 3000);
+      }
     }
     function savePlaylists() {
       localStorage.setItem(userKey("playlists"), JSON.stringify(state.playlists));
@@ -3409,8 +3502,13 @@
       dom.authModal.classList.add("hidden");
       updateAuthUI();
       loadUserData();
-      pullFromCloud();
       toast(`Welcome back, ${found.name}!`);
+      // Surface sync errors on first sign-in so the user knows if cloud is broken.
+      pullFromCloud({ showErrors: true }).then(r => {
+        if (r.ok && (r.plPulled > 0 || r.favPulled > 0)) {
+          setTimeout(() => toast(`Pulled ${r.plPulled} playlists, ${r.favPulled} liked songs from cloud`), 1500);
+        }
+      });
     };
 
     // Allow Enter key in password field
@@ -4499,8 +4597,8 @@
         loadUserData();
         loadSharedData();
         renderSidebarPlaylists();
-        // Pull cloud data on login (fire-and-forget; merges with local cache)
-        pullFromCloud();
+        // Pull cloud data on app start (fire-and-forget; surfaces errors via toast)
+        pullFromCloud({ showErrors: true });
       } else {
         renderFavorites();
         renderDownloads();
