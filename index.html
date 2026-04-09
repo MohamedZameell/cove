@@ -1799,6 +1799,15 @@
           <h2 style="font-size:1.8rem;font-weight:800;letter-spacing:-0.03em;" id="greetingText">Good evening</h2>
         </div>
 
+        <!-- Location prompt banner -->
+        <div id="locationBanner" class="hidden" style="background:linear-gradient(135deg,#1db954,#0d7a3a);padding:14px 18px;border-radius:10px;margin:8px 0 20px;display:flex;align-items:center;gap:12px;">
+          <div style="flex:1;">
+            <div style="font-weight:700;font-size:0.95rem;color:#fff;">Tune Isai for your region</div>
+            <div style="font-size:0.78rem;color:rgba(255,255,255,0.85);">Allow location to get music in your local languages.</div>
+          </div>
+          <button id="locationBannerBtn" style="background:#fff;color:#000;border:none;padding:8px 16px;border-radius:20px;font-weight:700;font-size:0.82rem;cursor:pointer;">Allow</button>
+        </div>
+
         <!-- Recently Played Quick Cards -->
         <div id="recentSection" class="hidden" style="margin-bottom:28px;">
           <div id="recentGrid" class="recent-grid"></div>
@@ -2497,6 +2506,8 @@
       document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
       const el = $(`${page}Page`);
       if (el) el.classList.add("active");
+      // Re-render data-driven pages on entry so they always reflect current state.
+      if (page === "favorites") renderFavorites();
 
       // Update sidebar active
       document.querySelectorAll(".sidebar-nav-item").forEach(b => b.classList.toggle("active", b.dataset.page === page));
@@ -3153,11 +3164,18 @@
       return LANG_BY_REGION[cc] || [];
     }
 
+    function updateLocationBanner() {
+      const banner = $("locationBanner");
+      if (!banner) return;
+      const needsLocation = !state.userLangs.length && state.locationStatus !== "requesting";
+      banner.classList.toggle("hidden", !needsLocation);
+    }
+
     async function ensureLocation() {
       // Already have languages? Nothing to do.
-      if (state.userLangs.length) return;
-      if (state.locationStatus === "requesting" || state.locationStatus === "denied") return;
-      if (!("geolocation" in navigator)) { state.locationStatus = "denied"; return; }
+      if (state.userLangs.length) { updateLocationBanner(); return; }
+      if (state.locationStatus === "requesting") return;
+      if (!("geolocation" in navigator)) { state.locationStatus = "denied"; updateLocationBanner(); return; }
       state.locationStatus = "requesting";
       try {
         const pos = await new Promise((resolve, reject) => {
@@ -3182,11 +3200,16 @@
             ts: Date.now()
           }));
           toast(`Tuned for ${data.principalSubdivision || data.countryName || "your region"}`);
+          updateLocationBanner();
+          // Refresh homepage so sections re-rank with the new languages.
+          if (typeof loadInitial === "function") loadInitial();
         } else {
           state.locationStatus = "granted"; // permission was given, just no mapping
+          updateLocationBanner();
         }
       } catch {
         state.locationStatus = "denied";
+        updateLocationBanner();
       }
     }
 
@@ -4307,6 +4330,13 @@
     };
     $("favShuffleToggle").onclick = () => toggleShuffle();
 
+    // Location banner — gesture-triggered geolocation request (iOS PWA needs this)
+    $("locationBannerBtn").onclick = async () => {
+      // Reset denied state so retry actually re-prompts
+      if (state.locationStatus === "denied") state.locationStatus = "idle";
+      await ensureLocation();
+    };
+
     // ── INIT ──
     (async () => {
       loadAuth();
@@ -4326,6 +4356,12 @@
       renderRecentlyPlayed();
       renderSearchHistory();
       renderBrowseCategories();
+
+      // Always try to grab location early so the homepage tunes itself,
+      // regardless of whether the user is signed in. Safe to call repeatedly.
+      loadLocation();
+      ensureLocation();
+      updateLocationBanner();
 
       await loadInitial();
     })();
