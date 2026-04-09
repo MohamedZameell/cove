@@ -3316,58 +3316,141 @@
       $("greetingText").textContent = state.user ? `${g}, ${state.user.name}` : g;
     }
 
-    // ── HOME: SPOTIFY-STYLE SECTIONS ──
-    const HOME_SECTIONS = [
-      { title: "Trending Now", queries: [
-        { type: "playlist", q: "chartbusters 2025 tamil" },
-        { type: "playlist", q: "chartbusters 2025 hindi" },
-        { type: "playlist", q: "top hits 2025 english" },
-        { type: "playlist", q: "global top hits 2025" },
-        { type: "playlist", q: "viral hits 2025" }
-      ]},
-      { title: "Tamil Hits", queries: [
-        { type: "playlist", q: "tamil hits 2025" },
-        { type: "playlist", q: "tamil melody songs" },
-        { type: "playlist", q: "tamil mass kuthu songs" },
-        { type: "playlist", q: "AR Rahman tamil hits" },
-        { type: "playlist", q: "Anirudh Ravichander songs" }
-      ]},
-      { title: "Bollywood & Hindi", queries: [
-        { type: "playlist", q: "bollywood hits 2025" },
-        { type: "playlist", q: "romantic hindi songs 2025" },
-        { type: "playlist", q: "arijit singh hits" },
-        { type: "playlist", q: "bollywood dance hits 2025" },
-        { type: "playlist", q: "hindi lofi chill" }
-      ]},
-      { title: "International", queries: [
-        { type: "playlist", q: "pop hits 2025" },
-        { type: "playlist", q: "hip hop rap 2025" },
-        { type: "playlist", q: "kpop hits 2025" },
-        { type: "playlist", q: "latin reggaeton 2025" },
-        { type: "playlist", q: "edm dance electronic 2025" }
-      ]},
-      { title: "Mood & Vibes", queries: [
-        { type: "playlist", q: "chill vibes relaxing" },
-        { type: "playlist", q: "workout gym motivation" },
-        { type: "playlist", q: "love songs romantic" },
-        { type: "playlist", q: "party songs 2025" },
-        { type: "playlist", q: "sad songs emotional" }
-      ]}
+    // ── HOME: LOCATION-AWARE CATALOG ──
+    // Each section is tagged with a language. At runtime, sections are ordered so that
+    // the user's preferred languages (from geolocation) come first, then mood/global ('*'),
+    // then international content. mode='album' fetches via /search/albums; mode='playlist'
+    // via /search/playlists. Multiple queries per section are merged and deduped to maximize
+    // coverage and approximate JioSaavn's "everything for your region" homepage.
+    const HOME_CATALOG = [
+      // ── TAMIL ──
+      { lang: "tamil", title: "New Tamil Releases", mode: "album",
+        queries: ["new tamil album 2026", "tamil album 2025", "new tamil songs 2026"] },
+      { lang: "tamil", title: "Tamil Top Hits", mode: "playlist",
+        queries: ["tamil top hits 2025", "tamil chartbusters", "best tamil songs 2025"] },
+      { lang: "tamil", title: "Tamil Melody", mode: "playlist",
+        queries: ["tamil melody hits", "tamil love songs", "soft tamil songs"] },
+      { lang: "tamil", title: "Mass & Kuthu", mode: "playlist",
+        queries: ["tamil mass kuthu songs", "anirudh ravichander hits"] },
+      { lang: "tamil", title: "A.R. Rahman", mode: "playlist",
+        queries: ["ar rahman tamil hits", "ar rahman classics"] },
+
+      // ── HINDI ──
+      { lang: "hindi", title: "New Hindi Albums", mode: "album",
+        queries: ["new hindi album 2026", "bollywood album 2025", "hindi film album 2026"] },
+      { lang: "hindi", title: "Bollywood Top Hits", mode: "playlist",
+        queries: ["bollywood hits 2025", "hindi top songs 2025", "bollywood chartbusters"] },
+      { lang: "hindi", title: "Romantic Bollywood", mode: "playlist",
+        queries: ["romantic hindi songs", "arijit singh hits", "love hindi songs"] },
+      { lang: "hindi", title: "Bollywood Dance & Party", mode: "playlist",
+        queries: ["bollywood dance hits", "party hindi songs"] },
+      { lang: "hindi", title: "Hindi Lofi & Chill", mode: "playlist",
+        queries: ["hindi lofi chill", "bollywood lofi"] },
+
+      // ── ENGLISH ──
+      { lang: "english", title: "New English Albums", mode: "album",
+        queries: ["new english album 2026", "pop album 2025", "top album 2026"] },
+      { lang: "english", title: "Top English Hits", mode: "playlist",
+        queries: ["top english hits 2025", "global top hits 2025", "pop hits 2025"] },
+      { lang: "english", title: "Hip-Hop & Rap", mode: "playlist",
+        queries: ["hip hop hits 2025", "rap top songs 2025"] },
+      { lang: "english", title: "EDM & Electronic", mode: "playlist",
+        queries: ["edm hits 2025", "electronic dance 2025"] },
+      { lang: "english", title: "R&B & Soul", mode: "playlist",
+        queries: ["rnb soul hits 2025", "rnb classics"] },
+
+      // ── REGIONAL INDIAN ──
+      { lang: "malayalam", title: "Malayalam Hits", mode: "playlist",
+        queries: ["malayalam hits 2025", "top malayalam songs"] },
+      { lang: "malayalam", title: "New Malayalam Albums", mode: "album",
+        queries: ["new malayalam album 2026", "malayalam album 2025"] },
+      { lang: "telugu", title: "Telugu Top Hits", mode: "playlist",
+        queries: ["telugu hits 2025", "top telugu songs 2025"] },
+      { lang: "telugu", title: "New Telugu Albums", mode: "album",
+        queries: ["new telugu album 2026", "telugu album 2025"] },
+      { lang: "kannada", title: "Kannada Hits", mode: "playlist",
+        queries: ["kannada hits 2025", "top kannada songs"] },
+      { lang: "kannada", title: "New Kannada Albums", mode: "album",
+        queries: ["new kannada album 2026", "kannada album 2025"] },
+      { lang: "punjabi", title: "Punjabi Hits", mode: "playlist",
+        queries: ["punjabi hits 2025", "punjabi top songs"] },
+      { lang: "marathi", title: "Marathi Hits", mode: "playlist",
+        queries: ["marathi hits 2025", "top marathi songs"] },
+      { lang: "bengali", title: "Bengali Hits", mode: "playlist",
+        queries: ["bengali hits 2025", "top bengali songs"] },
+
+      // ── MOOD / GLOBAL (always shown after preferred languages) ──
+      { lang: "*", title: "Chill & Relax", mode: "playlist",
+        queries: ["chill vibes relaxing", "lofi chill", "relaxing songs"] },
+      { lang: "*", title: "Workout & Gym", mode: "playlist",
+        queries: ["workout songs", "gym motivation"] },
+      { lang: "*", title: "Love & Romance", mode: "playlist",
+        queries: ["love songs romantic", "romantic hits"] },
+      { lang: "*", title: "Party Anthems", mode: "playlist",
+        queries: ["party songs 2025", "dance party hits"] },
+
+      // ── INTERNATIONAL (always at the bottom) ──
+      { lang: "korean", title: "K-Pop Wave", mode: "playlist",
+        queries: ["kpop hits 2025", "top kpop songs"] },
+      { lang: "spanish", title: "Latin Fire", mode: "playlist",
+        queries: ["latin reggaeton hits", "spanish hits 2025"] },
+      { lang: "arabic", title: "Arabic Hits", mode: "playlist",
+        queries: ["arabic top songs 2025", "arabic hits"] }
     ];
 
-    async function fetchPlaylistCard(query) {
+    function orderHomeCatalog(catalog, userLangs) {
+      // 1. Preferred-language sections in user priority order
+      // 2. Universal/mood sections (lang === '*')
+      // 3. International sections (lang not in userLangs)
+      const ordered = [];
+      const used = new Set();
+      const langs = userLangs.length ? userLangs : ["english", "hindi"];
+      for (const lang of langs) {
+        catalog.filter(s => s.lang === lang).forEach(s => { ordered.push(s); used.add(s); });
+      }
+      catalog.filter(s => s.lang === "*" && !used.has(s)).forEach(s => { ordered.push(s); used.add(s); });
+      catalog.filter(s => !used.has(s)).forEach(s => ordered.push(s));
+      return ordered;
+    }
+
+    async function fetchPlaylistsBatch(query, limit = 5) {
       try {
-        const search = await apiFetch(`/search/playlists?query=${encodeURIComponent(query)}&limit=1`);
-        const result = search?.data?.results?.[0];
-        if (!result) return null;
-        const imgs = Array.isArray(result.image) ? result.image : [];
-        return {
-          id: result.id,
-          title: decode(result.name || result.title || query),
-          image: (imgs.length ? imgs[imgs.length - 1]?.url : "") || imgs[0]?.url || "",
-          songCount: result.songCount || 0
-        };
-      } catch { return null; }
+        const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(query)}&limit=${limit}`);
+        const results = r?.data?.results || [];
+        return results.map(p => {
+          const imgs = Array.isArray(p.image) ? p.image : [];
+          return {
+            id: p.id,
+            type: "playlist",
+            title: decode(p.name || p.title || query),
+            image: (imgs.length ? imgs[imgs.length - 1]?.url : "") || imgs[0]?.url || "",
+            songCount: p.songCount || 0
+          };
+        }).filter(p => p.id && p.image);
+      } catch { return []; }
+    }
+
+    async function fetchAlbumsBatch(query, limit = 5) {
+      try {
+        const r = await apiFetch(`/search/albums?query=${encodeURIComponent(query)}&limit=${limit}`);
+        const results = r?.data?.results || [];
+        return results.map(a => {
+          const imgs = Array.isArray(a.image) ? a.image : [];
+          return {
+            id: a.id,
+            type: "album",
+            title: decode(a.name || a.title || query),
+            image: (imgs.length ? imgs[imgs.length - 1]?.url : "") || imgs[0]?.url || "",
+            subtitle: decode(a.description || (a.year ? `${a.year} \u2022 Album` : "") || a.primaryArtists || "Album")
+          };
+        }).filter(a => a.id && a.image);
+      } catch { return []; }
+    }
+
+    // Kept for backward compatibility — single playlist card lookup.
+    async function fetchPlaylistCard(query) {
+      const r = await fetchPlaylistsBatch(query, 1);
+      return r[0] || null;
     }
 
     async function fetchAndPlayPlaylist(playlistId) {
@@ -3413,16 +3496,37 @@
     function renderHomeCard(item) {
       const card = document.createElement("div");
       card.className = "card";
+      const sub = item.type === "album"
+        ? (item.subtitle || "Album")
+        : (item.songCount ? item.songCount + " songs" : "Playlist");
       card.innerHTML = `
         <div class="card-art">
           ${item.image ? `<img src="${item.image}" alt="${item.title}" loading="lazy">` : ""}
           <div class="card-play"><svg><use href="#ico-play"/></svg></div>
         </div>
         <div class="card-title">${item.title}</div>
-        <div class="card-sub">${item.songCount ? item.songCount + " songs" : "Playlist"}</div>
+        <div class="card-sub">${sub}</div>
       `;
-      card.onclick = () => fetchAndPlayPlaylist(item.id);
+      card.onclick = () => {
+        if (item.type === "album") fetchAndPlayAlbum(item.id);
+        else fetchAndPlayPlaylist(item.id);
+      };
       return card;
+    }
+
+    async function loadSectionItems(section) {
+      const fetcher = section.mode === "album" ? fetchAlbumsBatch : fetchPlaylistsBatch;
+      const lists = await Promise.all(section.queries.map(q => fetcher(q, 5)));
+      const seen = new Set();
+      const items = [];
+      for (const list of lists) {
+        for (const it of list) {
+          if (it && !seen.has(it.id)) { seen.add(it.id); items.push(it); }
+          if (items.length >= 12) break;
+        }
+        if (items.length >= 12) break;
+      }
+      return items;
     }
 
     async function loadHomeSections() {
@@ -3431,29 +3535,59 @@
       const container = $("homeSections");
       container.innerHTML = "";
 
-      // Load all sections in parallel
-      const sectionPromises = HOME_SECTIONS.map(async (section) => {
-        const cards = await Promise.all(section.queries.map(q => fetchPlaylistCard(q.q)));
-        return { title: section.title, cards: cards.filter(Boolean) };
-      });
-
-      try {
-        const sections = await Promise.all(sectionPromises);
-        sections.forEach(section => {
-          if (!section.cards.length) return;
-          const sectionEl = document.createElement("div");
-          sectionEl.style.marginBottom = "36px";
-          sectionEl.innerHTML = `<div class="section-header"><h3>${section.title}</h3></div>`;
-          const grid = document.createElement("div");
-          grid.className = "card-grid";
-          section.cards.forEach(item => grid.appendChild(renderHomeCard(item)));
-          sectionEl.appendChild(grid);
-          container.appendChild(sectionEl);
-        });
-        showHome();
-      } catch (err) {
-        showError(err.message);
+      // Wait briefly for geolocation to populate userLangs so the first section is regional.
+      // If permission is still pending after 1.5s, render with whatever we have (default order).
+      if (!state.userLangs.length && state.locationStatus === "requesting") {
+        await Promise.race([
+          new Promise(r => {
+            const check = () => state.locationStatus !== "requesting" ? r() : setTimeout(check, 100);
+            check();
+          }),
+          new Promise(r => setTimeout(r, 1500))
+        ]);
       }
+
+      const ordered = orderHomeCatalog(HOME_CATALOG, state.userLangs);
+      let renderedAny = false;
+
+      // Render skeleton placeholders for each section so the user sees structure (and the
+      // ordering — regional first) immediately while content streams in.
+      const skelCard = `
+        <div class="card">
+          <div class="card-art skeleton" style="aspect-ratio:1"></div>
+          <div class="skeleton skeleton-text w60" style="margin-top:12px"></div>
+          <div class="skeleton skeleton-text w40" style="margin-top:6px"></div>
+        </div>`;
+      ordered.forEach((section, i) => {
+        const sectionEl = document.createElement("div");
+        sectionEl.style.marginBottom = "36px";
+        sectionEl.dataset.sectionIndex = String(i);
+        sectionEl.innerHTML = `
+          <div class="section-header"><h3>${section.title}</h3></div>
+          <div class="card-grid">${skelCard.repeat(6)}</div>`;
+        container.appendChild(sectionEl);
+      });
+      showHome();
+
+      // Fire all section fetches in parallel; render each as it resolves so the user can
+      // start scrolling/interacting before the long tail finishes.
+      await Promise.all(ordered.map(async (section, i) => {
+        try {
+          const items = await loadSectionItems(section);
+          const sectionEl = container.querySelector(`[data-section-index="${i}"]`);
+          if (!sectionEl) return;
+          if (!items.length) { sectionEl.remove(); return; }
+          const grid = sectionEl.querySelector(".card-grid");
+          grid.innerHTML = ""; // remove skeleton cards
+          items.forEach(item => grid.appendChild(renderHomeCard(item)));
+          renderedAny = true;
+        } catch {
+          const sectionEl = container.querySelector(`[data-section-index="${i}"]`);
+          if (sectionEl) sectionEl.remove();
+        }
+      }));
+
+      if (!renderedAny) showError("Couldn't load homepage. Try again.");
     }
 
     async function loadInitial(force = false) {
