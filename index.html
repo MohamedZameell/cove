@@ -1850,6 +1850,10 @@
           <button class="ctrl-btn" id="favShuffleToggle" title="Shuffle" style="opacity:1"><svg style="width:20px;height:20px;fill:currentColor"><use href="#ico-shuffle"/></svg></button>
         </div>
         <div id="favoritesList" class="song-list"></div>
+        <div id="libraryPlaylistsSection" style="margin-top:32px;display:none;">
+          <h3 style="margin:0 0 16px;font-size:1.25rem;">Your Playlists</h3>
+          <div id="libraryPlaylistsGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:16px;"></div>
+        </div>
       </section>
 
       <!-- PLAYLISTS PAGE (single playlist view) -->
@@ -2617,6 +2621,7 @@
         btn.onclick = () => openPlaylistView(pl);
         dom.userPlaylistsSidebar.appendChild(btn);
       });
+      renderLibraryPlaylists();
     }
 
     // ── RENDER: PLAYLIST VIEW ──
@@ -2931,6 +2936,11 @@
       navigator.mediaSession.setActionHandler("pause", () => audio.pause());
       navigator.mediaSession.setActionHandler("previoustrack", () => skipPrev());
       navigator.mediaSession.setActionHandler("nexttrack", () => skipNext(true));
+      // iOS chooses between seek (±10s) and skip (prev/next) based on which
+      // handlers are registered. Explicitly disable seek so the lock screen
+      // always shows next/previous track buttons.
+      try { navigator.mediaSession.setActionHandler("seekbackward", null); } catch (e) {}
+      try { navigator.mediaSession.setActionHandler("seekforward", null); } catch (e) {}
     }
 
     // Keyboard shortcuts
@@ -3303,6 +3313,32 @@
       const songs = state.favorites.map(f => enrichSong(f.song));
       dom.favCount.textContent = `${songs.length} song${songs.length === 1 ? "" : "s"}`;
       renderSongList(dom.favoritesList, songs, songs);
+      renderLibraryPlaylists();
+    }
+
+    function renderLibraryPlaylists() {
+      const section = $("libraryPlaylistsSection");
+      const grid = $("libraryPlaylistsGrid");
+      if (!section || !grid) return;
+      if (!state.playlists.length) { section.style.display = "none"; return; }
+      section.style.display = "block";
+      grid.innerHTML = "";
+      state.playlists.forEach(pl => {
+        const songs = state.playlistSongs[pl.id] || [];
+        const cover = pl.cover_song?.image || songs[0]?.image || "";
+        const card = document.createElement("button");
+        card.className = "playlist-card";
+        card.style.cssText = "background:var(--bg-elevated);border:none;border-radius:8px;padding:12px;cursor:pointer;text-align:left;color:inherit;transition:background 0.2s;";
+        card.innerHTML = `
+          <div style="width:100%;aspect-ratio:1;border-radius:6px;overflow:hidden;background:var(--bg-base);margin-bottom:10px;display:grid;place-items:center;">
+            ${cover ? `<img src="${cover}" alt="" style="width:100%;height:100%;object-fit:cover">` : `<svg style="width:36px;height:36px;fill:var(--text-sub)"><use href="#ico-library"/></svg>`}
+          </div>
+          <div style="font-weight:600;font-size:0.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${pl.name}</div>
+          <div style="font-size:0.75rem;color:var(--text-sub);margin-top:2px;">${songs.length} song${songs.length === 1 ? "" : "s"}</div>
+        `;
+        card.onclick = () => openPlaylistView(pl);
+        grid.appendChild(card);
+      });
     }
 
     function renderDownloads() {
