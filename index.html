@@ -1919,7 +1919,7 @@
     <!-- ── SIDEBAR ── -->
     <aside class="sidebar">
       <div class="sidebar-logo">
-        <div class="logo-icon"><svg width="20" height="20" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M24 8C24 8 22 6 16 6C10 6 4 10 4 16C4 22 8 26 14 26" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/><path d="M6 18C10 18 14 16 18 14C22 12 26 11 28 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/></svg></div>
+        <div class="logo-icon"><svg width="22" height="22" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M25 7C25 7 22 4 16 4C9 4 3 9 3 16C3 23 7 28 14 28" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><path d="M5 18C10 18 15 15 19 13C23 11 27 10 29 11" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/></svg></div>
         <h1>Cove</h1>
       </div>
 
@@ -5068,7 +5068,7 @@
       const manifest = {
         name: "Cove", short_name: "Cove", display: "standalone",
         theme_color: "#060508", background_color: "#060508", start_url: ".",
-        icons: [{ src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='48' fill='%23c9a55c'/%3E%3Cpath d='M136 52c0 0-12-12-40-12s-60 24-60 60c0 36 24 48 60 48' stroke='%23060508' stroke-width='18' stroke-linecap='round' fill='none'/%3E%3Cpath d='M44 108c24 0 48-12 72-24s48-10 60-4' stroke='%23060508' stroke-width='13' stroke-linecap='round' fill='none' opacity='0.5'/%3E%3C/svg%3E", sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" }]
+        icons: [{ src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='48' fill='%23c9a55c'/%3E%3Cpath d='M140 46c0 0-18-18-44-18-42 0-78 30-78 72 0 42 24 48 66 48' stroke='%23060508' stroke-width='30' stroke-linecap='round' fill='none'/%3E%3Cpath d='M38 108c30 0 54-18 84-30s54-6 60 0' stroke='%23060508' stroke-width='22' stroke-linecap='round' fill='none'/%3E%3C/svg%3E", sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" }]
       };
       const url = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: "application/json" }));
       const link = document.createElement("link"); link.rel = "manifest"; link.href = url;
