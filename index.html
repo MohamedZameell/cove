@@ -2853,6 +2853,7 @@
       const missing = rawSongs.filter(s => !s.src && s.id);
       if (!missing.length) return rawSongs;
       const byId = new Map();
+      // Phase 1: try /songs/{id} for each missing song
       await Promise.all(missing.map(async (s) => {
         try {
           const r = await apiFetch(`/songs/${s.id}`);
@@ -2863,6 +2864,30 @@
           }
         } catch {}
       }));
+      // Phase 2: for songs still missing, try search by title + artist
+      const stillMissing = missing.filter(s => !byId.has(s.id));
+      if (stillMissing.length) {
+        await Promise.all(stillMissing.map(async (s) => {
+          try {
+            const q = `${s.title} ${s.artist}`.trim();
+            if (!q) return;
+            const r = await apiFetch(`/search/songs?query=${encodeURIComponent(q)}&limit=3`);
+            const results = r?.data?.results || [];
+            for (const raw of results) {
+              const n = normalizeSong(raw);
+              if (n.src && n.title.toLowerCase() === s.title.toLowerCase()) {
+                byId.set(s.id, { ...n, id: s.id });
+                break;
+              }
+            }
+            // If exact title match failed, take first result with src
+            if (!byId.has(s.id) && results.length) {
+              const n = normalizeSong(results[0]);
+              if (n.src) byId.set(s.id, { ...n, id: s.id });
+            }
+          } catch {}
+        }));
+      }
       return rawSongs.map(s => byId.get(s.id) || s);
     }
 
@@ -2876,13 +2901,13 @@
         const data = al?.data || {};
         let rawSongs = (data.songs || []).map(normalizeSong);
         rawSongs = await enrichMissingSrc(rawSongs);
-        let songs = rawSongs.filter(s => s.src).map(enrichSong);
-        // Fallback: if album endpoint yielded nothing playable, search by album name
+        // Keep all songs — those without src will be resolved on-demand in resolveSource()
+        let songs = rawSongs.map(enrichSong);
+        // If album endpoint returned zero songs entirely, search by album name
         if (!songs.length && data.name) {
           try {
             const sr = await apiFetch(`/search/songs?query=${encodeURIComponent(decode(data.name))}&limit=20`);
-            const searchSongs = (sr?.data?.results || []).map(normalizeSong).filter(s => s.src).map(enrichSong);
-            if (searchSongs.length) songs = searchSongs;
+            songs = (sr?.data?.results || []).map(normalizeSong).map(enrichSong);
           } catch {}
         }
         if (!songs.length) { toast("No playable songs in album"); return; }
@@ -3185,7 +3210,28 @@
         const blob = await getBlob(song.localBlobKey);
         if (blob) return URL.createObjectURL(blob);
       }
-      return song.src;
+      if (song.src) return song.src;
+      // On-demand fetch: song has no src, try to resolve it now
+      try {
+        const r = await apiFetch(`/songs/${song.id}`);
+        const raw = Array.isArray(r?.data) ? r.data[0] : r?.data;
+        if (raw) {
+          const n = normalizeSong(raw);
+          if (n.src) { song.src = n.src; return n.src; }
+        }
+      } catch {}
+      // Last resort: search by title
+      try {
+        const q = `${song.title} ${song.artist}`.trim();
+        if (q) {
+          const r = await apiFetch(`/search/songs?query=${encodeURIComponent(q)}&limit=3`);
+          for (const raw of (r?.data?.results || [])) {
+            const n = normalizeSong(raw);
+            if (n.src) { song.src = n.src; return n.src; }
+          }
+        }
+      } catch {}
+      return "";
     }
 
     async function playSong(song, queue) {
@@ -4085,7 +4131,7 @@
         const pl = await apiFetch(`/playlists?id=${encodeURIComponent(playlistId)}`);
         let rawSongs = (pl?.data?.songs || []).map(normalizeSong);
         rawSongs = await enrichMissingSrc(rawSongs);
-        const songs = rawSongs.filter(s => s.src).map(enrichSong);
+        const songs = rawSongs.map(enrichSong);
         if (songs.length) {
           state.songs = songs;
           // Open in playlist view style
