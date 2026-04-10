@@ -2876,7 +2876,15 @@
         const data = al?.data || {};
         let rawSongs = (data.songs || []).map(normalizeSong);
         rawSongs = await enrichMissingSrc(rawSongs);
-        const songs = rawSongs.filter(s => s.src).map(enrichSong);
+        let songs = rawSongs.filter(s => s.src).map(enrichSong);
+        // Fallback: if album endpoint yielded nothing playable, search by album name
+        if (!songs.length && data.name) {
+          try {
+            const sr = await apiFetch(`/search/songs?query=${encodeURIComponent(decode(data.name))}&limit=20`);
+            const searchSongs = (sr?.data?.results || []).map(normalizeSong).filter(s => s.src).map(enrichSong);
+            if (searchSongs.length) songs = searchSongs;
+          } catch {}
+        }
         if (!songs.length) { toast("No playable songs in album"); return; }
         state.songs = songs;
         const imgs = Array.isArray(data.image) ? data.image : [];
