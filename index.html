@@ -7,8 +7,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Cove</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap">
   <style>
-    @import url("https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap");
 
     :root {
       --bg: #060508;
@@ -19,7 +21,7 @@
       --bg-card-hover: #252230;
       --text: #f0ece4;
       --text-sub: #a09a8e;
-      --text-muted: #5a5550;
+      --text-muted: #8a8580;
       --accent: #c9a55c;
       --accent-hover: #d9b86c;
       --accent-glow: rgba(201,165,92,0.25);
@@ -178,7 +180,7 @@
     }
 
     .sidebar-library-header button {
-      width: 28px; height: 28px;
+      width: 36px; height: 36px;
       border-radius: 50%;
       display: grid; place-items: center;
       color: var(--text-sub);
@@ -305,7 +307,7 @@
     }
 
     .topbar-nav button {
-      width: 32px; height: 32px;
+      width: 36px; height: 36px;
       border-radius: 50%;
       background: rgba(0,0,0,0.7);
       display: grid; place-items: center;
@@ -347,10 +349,10 @@
 
     .search-box .search-clear {
       position: absolute;
-      right: 10px;
+      right: 4px;
       top: 50%;
       transform: translateY(-50%);
-      width: 24px; height: 24px;
+      width: 36px; height: 36px;
       border-radius: 50%;
       display: grid; place-items: center;
       color: var(--text-sub);
@@ -365,7 +367,7 @@
     }
 
     .topbar-actions .icon-btn {
-      width: 32px; height: 32px;
+      width: 36px; height: 36px;
       border-radius: 50%;
       display: grid; place-items: center;
       color: var(--text-sub);
@@ -908,7 +910,7 @@
     }
 
     .ctrl-btn {
-      width: 32px; height: 32px;
+      width: 36px; height: 36px;
       border-radius: 50%;
       display: grid; place-items: center;
       color: var(--text-sub);
@@ -936,7 +938,7 @@
     }
 
     .ctrl-btn.play-btn {
-      width: 36px; height: 36px;
+      width: 40px; height: 40px;
       background: var(--accent);
       color: var(--bg);
       font-size: 1rem;
@@ -1061,6 +1063,14 @@
     }
 
     .modal p { color: var(--text-sub); font-size: 0.9rem; line-height: 1.5; }
+
+    .modal-field { display: flex; flex-direction: column; gap: 6px; }
+    .modal-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-sub);
+      letter-spacing: 0.02em;
+    }
 
     .modal input {
       width: 100%;
@@ -1246,6 +1256,7 @@
       .topbar-nav { display: none; }
       .topbar .search-box { max-width: 100%; }
       .topbar .search-box input { font-size: 16px; padding: 10px 16px 10px 38px; } /* 16px prevents Safari auto-zoom */
+      .topbar .search-box .search-clear { width: 44px; height: 44px; right: 0; }
       /* Hide refresh and labeled sync on mobile to give topbar room — mobile users have the sync button on the Library page */
       .topbar-actions .icon-btn,
       .topbar-actions .topbar-sync-btn { display: none; }
@@ -1264,7 +1275,7 @@
 
       .card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
       .card { padding: 12px; }
-      .card .card-play { opacity: 1; transform: translateY(0); width: 40px; height: 40px; }
+      .card .card-play { opacity: 1; transform: translateY(0); width: 44px; height: 44px; }
       .card .card-play svg { width: 18px; height: 18px; }
 
       .song-row { grid-template-columns: 40px 1fr auto; gap: 12px; padding: 10px 12px; min-height: 56px; }
@@ -1364,6 +1375,9 @@
 
       /* Context menu on mobile */
       .context-menu { left: 16px !important; right: 16px; width: auto; }
+
+      /* Search history chip remove — always visible on mobile (no hover) */
+      .search-history-chip .sh-remove { opacity: 0.7; }
     }
 
     /* ── MOBILE BOTTOM NAV (override) ── */
@@ -1429,6 +1443,31 @@
     @keyframes pageFadeIn {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── PRESS FEEDBACK (mobile tap) ── */
+    @media (hover: none), (pointer: coarse) {
+      .card:active { transform: scale(0.97); }
+      .song-row:active { background: rgba(255,255,255,0.12); }
+      .chip:active { transform: scale(0.95); }
+      .recent-card:active { transform: scale(0.98); }
+      .browse-card:active { transform: scale(0.96); }
+      .btn-primary:active { transform: scale(0.96); }
+      .btn-ghost:active { background: rgba(255,255,255,0.12); }
+      .sidebar-nav-item:active { background: var(--bg-highlight); }
+      .sidebar-playlist-item:active { background: var(--bg-highlight); }
+      .mobile-nav-btn:active { opacity: 0.6; }
+      .ctrl-btn:active { transform: scale(0.88); }
+      .np-ctrl:active { transform: scale(0.88); }
+      .action-btn:active { transform: scale(0.88); }
+      .pl-shuffle-play:active { transform: scale(0.92); }
+      .context-menu button:active { background: rgba(255,255,255,0.15); }
+      .search-history-chip:active { transform: scale(0.95); }
+      .topbar-auth:active { transform: scale(0.94); }
+      .topbar-sync-btn:active { transform: scale(0.94); }
+      .player-mobile-ctrls button:active { opacity: 0.5; }
+      .np-extra button:active { opacity: 0.5; }
+      .sleep-menu button:active { background: rgba(255,255,255,0.15); }
     }
 
     /* ── REDUCED MOTION ── */
@@ -1541,8 +1580,8 @@
       flex-shrink: 0;
     }
     .np-header button {
-      height: 36px;
-      min-width: 36px;
+      height: 44px;
+      min-width: 44px;
       border-radius: var(--radius-full);
       display: flex; align-items: center; justify-content: center; gap: 4px;
       color: var(--text-sub);
@@ -1793,12 +1832,13 @@
     }
     .search-history-chip:hover { background: var(--bg-card-hover); color: var(--text); }
     .search-history-chip .sh-remove {
-      width: 14px; height: 14px;
+      width: 28px; height: 28px;
       border-radius: 50%;
       display: grid; place-items: center;
-      font-size: 0.7rem;
+      font-size: 0.75rem;
       opacity: 0;
       transition: opacity 0.15s;
+      margin: -4px -8px -4px 0;
     }
     .search-history-chip:hover .sh-remove { opacity: 1; }
 
@@ -2202,8 +2242,14 @@
     <div class="modal">
       <h3>Sign in to Cove</h3>
       <p>Enter your credentials to access your music library.</p>
-      <input id="emailInput" type="email" placeholder="Email" autocomplete="email">
-      <input id="passwordInput" type="password" placeholder="Password" autocomplete="current-password">
+      <div class="modal-field">
+        <label class="modal-label" for="emailInput">Email</label>
+        <input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div class="modal-field">
+        <label class="modal-label" for="passwordInput">Password</label>
+        <input id="passwordInput" type="password" placeholder="Enter password" autocomplete="current-password">
+      </div>
       <p id="authMessage" style="font-size:0.82rem;color:var(--error);min-height:1.2em;"></p>
       <div class="modal-actions">
         <button class="btn-ghost" id="authCancel">Cancel</button>
@@ -2216,7 +2262,10 @@
   <div class="modal-overlay hidden" id="playlistModal">
     <div class="modal">
       <h3 id="plModalTitle">Create Playlist</h3>
-      <input id="plNameInput" type="text" placeholder="Playlist name">
+      <div class="modal-field">
+        <label class="modal-label" for="plNameInput">Name</label>
+        <input id="plNameInput" type="text" placeholder="My playlist">
+      </div>
       <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--text-sub);cursor:pointer;">
         <input type="checkbox" id="plSharedCheck" style="accent-color:var(--accent);width:16px;height:16px;"> Share with all users
       </label>
@@ -2983,7 +3032,15 @@
 
 
     // ── NAVIGATION ──
+    // Scroll position memory — keyed by page name so back-nav restores position
+    const _scrollPositions = {};
+
     function switchPage(page, addHistory = true) {
+      // Save current scroll position before leaving
+      if (state.currentPage) {
+        _scrollPositions[state.currentPage] = dom.mainContent.scrollTop;
+      }
+
       if (addHistory && state.currentPage !== page) {
         state.pageHistory.push(state.currentPage);
         state.pageForward = [];
@@ -3001,18 +3058,24 @@
       // Update mobile nav
       document.querySelectorAll(".mobile-nav-btn").forEach(b => b.classList.toggle("active", b.dataset.page === page));
 
-      // Scroll to top
-      dom.mainContent.scrollTop = 0;
+      // Restore scroll position if navigating back, otherwise scroll to top
+      if (!addHistory && _scrollPositions[page] != null) {
+        dom.mainContent.scrollTop = _scrollPositions[page];
+      } else {
+        dom.mainContent.scrollTop = 0;
+      }
     }
 
     dom.historyBack.onclick = () => {
       if (state.pageHistory.length) {
+        _scrollPositions[state.currentPage] = dom.mainContent.scrollTop;
         state.pageForward.push(state.currentPage);
         switchPage(state.pageHistory.pop(), false);
       }
     };
     dom.historyForward.onclick = () => {
       if (state.pageForward.length) {
+        _scrollPositions[state.currentPage] = dom.mainContent.scrollTop;
         state.pageHistory.push(state.currentPage);
         switchPage(state.pageForward.pop(), false);
       }
