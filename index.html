@@ -852,7 +852,7 @@
     .player-left .now-art img {
       width: 100%; height: 100%;
       object-fit: cover;
-      transition: opacity 0.3s ease;
+      transition: opacity 0.4s ease, transform 0.4s ease;
     }
 
     .player-left .now-info {
@@ -1578,7 +1578,7 @@
     .np-art-wrap img {
       width: 100%; height: 100%;
       object-fit: cover;
-      transition: opacity 0.35s ease;
+      transition: opacity 0.4s ease, transform 0.4s ease;
     }
 
     .np-info {
@@ -2482,10 +2482,19 @@
     function crossfadeArt(img, newSrc) {
       if (img.src === newSrc || img.getAttribute("src") === newSrc) return;
       img.style.opacity = "0";
+      img.style.transform = "scale(0.92)";
       let done = false;
-      const swap = () => { if (done) return; done = true; img.src = newSrc; img.style.opacity = "1"; };
+      const swap = () => {
+        if (done) return; done = true;
+        img.src = newSrc;
+        img.style.transform = "scale(1.06)";
+        img.style.opacity = "1";
+        requestAnimationFrame(() => {
+          setTimeout(() => { img.style.transform = "scale(1)"; }, 50);
+        });
+      };
       img.addEventListener("transitionend", swap, { once: true });
-      setTimeout(swap, 350);
+      setTimeout(swap, 420);
     }
     function fmt(seconds) {
       const s = Math.floor(Number(seconds) || 0);
@@ -3305,7 +3314,7 @@
 
       // Crossfade
       if (state.crossfade && !audio.paused && audio.currentTime > 0) {
-        crossfadeTo(src, song);
+        crossfadeTo(src);
       } else {
         audio.dataset.blobUrl = src.startsWith("blob:") ? src : "";
         audio.src = src;
@@ -3450,10 +3459,20 @@
       // MediaSession position state — skipped to prevent iOS showing seek ±10s buttons
       // Synced lyrics highlight
       if (state.syncedLyrics && state.syncedLyrics.length) highlightSyncedLyric(audio.currentTime);
+      // Auto-crossfade: start crossfading before track ends
+      if (state.crossfade && !xfadeActive && audio.duration > 0) {
+        const remaining = audio.duration - audio.currentTime;
+        if (remaining <= CROSSFADE_MS / 1000 && remaining > 0.5 && state.repeatMode !== "one") {
+          const nextIdx = state.currentIndex + 1;
+          if (nextIdx < state.currentQueue.length || state.repeatMode === "all") {
+            skipNext(true);
+          }
+        }
+      }
     };
 
     audio.onloadedmetadata = () => { dom.totalTime.textContent = fmt(audio.duration); $("npTotal").textContent = fmt(audio.duration); };
-    audio.onended = () => skipNext();
+    audio.onended = () => { if (!xfadeActive) skipNext(); };
 
     // Progress seek
     dom.progressTrack.onclick = (e) => {
@@ -4437,34 +4456,44 @@
 
     // ── CROSSFADE ──
     state.crossfade = true;
+    const CROSSFADE_MS = 3000;
     const audio2 = $("audio2");
-    function crossfadeTo(newSrc, song) {
-      const fadeDuration = 2000;
-      const steps = 40;
-      const interval = fadeDuration / steps;
-      let step = 0;
-      const oldVol = audio.volume;
+    let xfadeRAF = null;
+    let xfadeActive = false;
+    function cancelCrossfade() {
+      if (xfadeRAF) { cancelAnimationFrame(xfadeRAF); xfadeRAF = null; }
+      xfadeActive = false;
+    }
+    function crossfadeTo(newSrc) {
+      cancelCrossfade();
+      xfadeActive = true;
+      const masterVol = audio.volume;
       audio2.src = newSrc;
       audio2.volume = 0;
       audio2.play().catch(() => {});
-      const timer = setInterval(() => {
-        step++;
-        const progress = step / steps;
-        audio.volume = oldVol * (1 - progress);
-        audio2.volume = oldVol * progress;
-        if (step >= steps) {
-          clearInterval(timer);
+      const start = performance.now();
+      function tick(now) {
+        const elapsed = now - start;
+        const t = Math.min(elapsed / CROSSFADE_MS, 1);
+        // Equal-power crossfade curve (sin/cos) — sounds natural
+        audio.volume = masterVol * Math.cos(t * Math.PI * 0.5);
+        audio2.volume = masterVol * Math.sin(t * Math.PI * 0.5);
+        if (t < 1) {
+          xfadeRAF = requestAnimationFrame(tick);
+        } else {
+          // Swap audio2 → audio seamlessly
           audio.pause();
-          audio.volume = oldVol;
-          // Swap: copy audio2 state to audio
           audio.src = newSrc;
           audio.currentTime = audio2.currentTime;
-          audio.volume = oldVol;
+          audio.volume = masterVol;
           audio.play().catch(() => {});
           audio2.pause();
           audio2.src = "";
+          audio2.volume = 0;
+          xfadeActive = false;
         }
-      }, interval);
+      }
+      xfadeRAF = requestAnimationFrame(tick);
     }
 
     // ── DYNAMIC COLOR EXTRACTION ──
