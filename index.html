@@ -264,18 +264,12 @@
     .sidebar-user-btn .avatar {
       width: 28px; height: 28px;
       border-radius: 50%;
-      background: var(--bg-elevated);
+      background: var(--accent);
+      color: var(--bg);
       display: grid; place-items: center;
+      font-family: var(--font-display);
       font-size: 0.75rem;
-      font-weight: 700;
-      overflow: hidden;
-    }
-
-    .sidebar-user-btn .avatar img,
-    .topbar-auth .ta-avatar img {
-      width: 100%; height: 100%;
-      object-fit: cover;
-      border-radius: 50%;
+      font-weight: 800;
     }
 
     /* ── MAIN CONTENT ── */
@@ -409,7 +403,6 @@
       font-weight: 800;
       font-size: 0.82rem;
       flex-shrink: 0;
-      overflow: hidden;
     }
 
     .topbar-auth .ta-name {
@@ -3773,18 +3766,11 @@
       const name = state.user ? state.user.name : "Sign in";
       const initial = state.user ? state.user.name[0].toUpperCase() : "?";
       dom.userName.textContent = name;
+      dom.userAvatar.textContent = initial;
       const tbName = $("topbarUserName");
       const tbAvatar = $("topbarAvatar");
       if (tbName) tbName.textContent = name;
-      if (state.user) {
-        const seed = encodeURIComponent(state.user.email || state.user.name);
-        const avatarUrl = `https://api.dicebear.com/9.x/thumbs/svg?seed=${seed}&backgroundColor=c9a55c`;
-        dom.userAvatar.innerHTML = `<img src="${avatarUrl}" alt="${name}">`;
-        if (tbAvatar) tbAvatar.innerHTML = `<img src="${avatarUrl}" alt="${name}">`;
-      } else {
-        dom.userAvatar.textContent = initial;
-        if (tbAvatar) tbAvatar.textContent = initial;
-      }
+      if (tbAvatar) tbAvatar.textContent = initial;
     }
 
     // Topbar sign-in button — duplicates sidebar trigger so iPhone users
