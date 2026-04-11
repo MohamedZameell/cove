@@ -852,6 +852,7 @@
     .player-left .now-art img {
       width: 100%; height: 100%;
       object-fit: cover;
+      transition: opacity 0.3s ease;
     }
 
     .player-left .now-info {
@@ -1577,6 +1578,7 @@
     .np-art-wrap img {
       width: 100%; height: 100%;
       object-fit: cover;
+      transition: opacity 0.35s ease;
     }
 
     .np-info {
@@ -2477,6 +2479,14 @@
     };
 
     // ── UTILS ──
+    function crossfadeArt(img, newSrc) {
+      if (img.src === newSrc || img.getAttribute("src") === newSrc) return;
+      img.style.opacity = "0";
+      let done = false;
+      const swap = () => { if (done) return; done = true; img.src = newSrc; img.style.opacity = "1"; };
+      img.addEventListener("transitionend", swap, { once: true });
+      setTimeout(swap, 350);
+    }
     function fmt(seconds) {
       const s = Math.floor(Number(seconds) || 0);
       return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -3303,7 +3313,7 @@
       }
 
       // Update player bar UI
-      dom.nowArt.src = song.image || DEFAULT_ART;
+      crossfadeArt(dom.nowArt, song.image || DEFAULT_ART);
       dom.nowTitle.textContent = song.title;
       dom.nowArtist.textContent = song.artist;
       dom.totalTime.textContent = fmt(song.duration);
@@ -4614,7 +4624,7 @@
 
     // ── NOW PLAYING OVERLAY ──
     function updateNowPlayingOverlay(song) {
-      $("npArt").src = song.image || "";
+      crossfadeArt($("npArt"), song.image || "");
       $("npTitle").textContent = song.title;
       $("npArtist").textContent = song.artist;
       $("npTotal").textContent = fmt(song.duration);
