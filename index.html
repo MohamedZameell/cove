@@ -943,6 +943,20 @@
       min-width: 0;
     }
 
+    .radio-badge {
+      display: inline-block;
+      margin-top: 4px;
+      padding: 2px 8px;
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: #1a1614;
+      background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+      border-radius: 999px;
+      text-transform: uppercase;
+    }
+    .radio-badge.hidden { display: none; }
+
     .player-left .now-title {
       font-size: 0.85rem;
       font-weight: 500;
@@ -2285,6 +2299,7 @@
           <button class="ctrl-btn" id="favShuffleToggle" title="Shuffle" style="opacity:1"><svg style="width:20px;height:20px;fill:currentColor"><use href="#ico-shuffle"/></svg></button>
           <div style="flex:1"></div>
           <button class="ctrl-btn" id="librarySyncBtn" title="Sync library across devices" style="opacity:1;color:var(--text-sub);font-size:0.78rem;width:auto;padding:0 12px;border-radius:16px;border:1px solid var(--text-sub)">Sync</button>
+          <button class="ctrl-btn" id="insightsBtn" title="Listening insights" aria-label="Listening insights" style="opacity:1;color:var(--text-sub);font-size:0.78rem;width:auto;padding:0 12px;border-radius:16px;border:1px solid var(--text-sub)">Insights</button>
         </div>
         <div id="favoritesList" class="song-list"></div>
         <div id="onRepeatSection" class="hidden" style="margin-top:32px;">
@@ -2345,6 +2360,7 @@
         <div class="now-info">
           <div class="now-title" id="nowTitle">Cove</div>
           <div class="now-artist" id="nowArtist">Your music home</div>
+          <span id="radioBadge" class="radio-badge hidden" title="Smart Radio is on" aria-live="polite">RADIO</span>
         </div>
         <div class="now-actions">
           <button id="nowFavBtn" title="Like" aria-label="Like this song"><svg style="width:16px;height:16px;fill:currentColor"><use href="#ico-heart-outline"/></svg></button>
@@ -2436,6 +2452,17 @@
       <div class="modal-actions">
         <button class="btn-ghost" id="plCancel">Cancel</button>
         <button class="btn-primary" id="plSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LISTENING INSIGHTS MODAL -->
+  <div class="modal-overlay hidden" id="insightsModal" role="dialog" aria-modal="true" aria-labelledby="insightsTitle">
+    <div class="modal" style="max-width:480px;">
+      <h3 id="insightsTitle">Your Listening</h3>
+      <div id="insightsBody"></div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="insightsClose">Close</button>
       </div>
     </div>
   </div>
@@ -2628,7 +2655,9 @@
       pageHistory: [],
       pageForward: [],
       userLangs: [],         // preferred JioSaavn language tags from geolocation
-      locationStatus: "idle" // idle | requesting | granted | denied
+      locationStatus: "idle", // idle | requesting | granted | denied
+      radioMode: false,       // Smart Radio: keep refilling queue from suggestions
+      radioSeed: null         // seed song for the current radio session
     };
 
     // ── DOM REFS ──
@@ -3733,6 +3762,7 @@
 
       const items = [
         { label: isFav(song.id) ? "Remove from Liked" : "Add to Liked", action: () => { haptic(); toggleFav(song); } },
+        { label: "Start radio", action: () => { haptic(); startRadio(song); } },
         { label: "Play Next", action: () => { haptic(); playNext(song); toast("Playing next"); } },
         { label: "Add to Queue", action: () => { haptic(); addToQueue(song); toast("Added to queue"); } },
         { label: isDl(song.id) ? "Remove Download" : "Download", action: () => { haptic(); toggleDownload(song); } },
@@ -3893,6 +3923,12 @@
       addToRecentlyPlayed(song);
       incrementPlayCount(song);
 
+      // Smart Radio: keep at least 5 songs queued ahead of the current index.
+      if (state.radioMode) {
+        const remaining = state.currentQueue.length - state.currentIndex - 1;
+        if (remaining < 5) appendSuggestionsToQueue(song).catch(() => {});
+      }
+
       // Fetch lyrics
       fetchLyrics(song);
 
@@ -3985,6 +4021,34 @@
       playSongAt(prev, state.currentQueue);
     }
 
+    // Smart Radio: seed an endless queue from a song. Plays seed immediately,
+    // appends fresh suggestions, and flags radioMode so playSongAt keeps the queue
+    // topped up as it drains.
+    async function startRadio(song) {
+      if (!song?.id) return;
+      const seed = enrichSong(song);
+      state.radioMode = true;
+      state.radioSeed = seed;
+      state.currentQueue = [seed];
+      state.currentIndex = -1;
+      await playSongAt(0, state.currentQueue);
+      const added = await appendSuggestionsToQueue(seed);
+      updateRadioBadge();
+      toast(added > 0 ? `Radio started: ${seed.title}` : `Radio: ${seed.title}`);
+    }
+
+    function stopRadio() {
+      state.radioMode = false;
+      state.radioSeed = null;
+      updateRadioBadge();
+    }
+
+    function updateRadioBadge() {
+      const badge = $("radioBadge");
+      if (!badge) return;
+      badge.classList.toggle("hidden", !state.radioMode);
+    }
+
     function addToQueue(song) {
       state.currentQueue.push(enrichSong(song));
       if (state.currentPage === "queue") renderQueue();
@@ -4006,6 +4070,7 @@
         state.currentQueue = [];
         state.currentIndex = -1;
       }
+      stopRadio();
       if (state.currentPage === "queue") renderQueue();
       toast("Queue cleared");
     }
@@ -5089,6 +5154,7 @@
                  : item.type === "genre" ? "Browse genre"
                  : item.type === "album" ? "Play album"
                  : item.type === "song" ? "Play song"
+                 : item.type === "mix" ? "Play mix"
                  : "Play playlist";
       card.setAttribute("aria-label", `${verb} ${item.title}`);
       card._itemId = item.id;
@@ -5098,6 +5164,7 @@
             : (item.type === "album" ? "Album"
               : item.type === "artist" ? "Artist"
               : item.type === "song" ? (item.artist || "Song")
+              : item.type === "mix" ? "Mix"
               : "Playlist"));
       card.innerHTML = `
         <div class="card-art">
@@ -5120,6 +5187,17 @@
         else if (item.type === "song" && item._songRef) {
           const queue = item._queueRef && item._queueRef.length ? item._queueRef : [item._songRef];
           playSong(item._songRef, queue);
+        }
+        else if (item.type === "mix" && item._mixRef) {
+          const songs = (item._mixRef.songs || []).map(enrichSong);
+          if (!songs.length) return;
+          // Shuffle each play so the mix feels fresh
+          const shuffled = songs.slice();
+          for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+          }
+          playSong(shuffled[0], shuffled);
         }
         else fetchAndPlayPlaylist(item.id);
       };
@@ -5398,6 +5476,71 @@
 
       // Background: insert "More Like X" personalized row using last-played seed.
       loadMoreLikeThis().catch(() => {});
+      // Personalized "Made For You" daily mixes from favorites + top-played clusters.
+      renderDailyMixes();
+    }
+
+    // Cluster the user's library by primary artist; surface up to 3 sizable clusters.
+    // Pool = favorites + top-played + recents, deduped. Each mix needs >=4 songs.
+    function buildDailyMixes() {
+      const pool = [];
+      const seen = new Set();
+      const push = (s) => { if (s?.id && !seen.has(s.id)) { seen.add(s.id); pool.push(s); } };
+      (state.favorites || []).forEach(f => push(f.song));
+      getTopPlayed(50).forEach(s => push(s));
+      getRecentlyPlayed().forEach(s => push(s));
+      if (pool.length < 8) return [];
+
+      const byArtist = new Map();
+      for (const s of pool) {
+        const primary = (s.artist || "").split(",")[0].trim();
+        if (!primary) continue;
+        const key = primary.toLowerCase();
+        if (!byArtist.has(key)) byArtist.set(key, { name: primary, songs: [] });
+        byArtist.get(key).songs.push(s);
+      }
+      return Array.from(byArtist.values())
+        .filter(c => c.songs.length >= 4)
+        .sort((a, b) => b.songs.length - a.songs.length)
+        .slice(0, 3)
+        .map((c, i) => ({
+          id: `mix:${c.name}`,
+          type: "mix",
+          title: `Daily Mix ${i + 1}`,
+          subtitle: c.name,
+          image: c.songs.find(s => s.image)?.image || "",
+          songs: c.songs.slice(0, 30)
+        }));
+    }
+
+    function renderDailyMixes() {
+      const container = $("homeSections");
+      if (!container) return;
+      const existing = container.querySelector('[data-section-key="daily-mix"]');
+      if (existing) existing.remove();
+      const mixes = buildDailyMixes();
+      if (!mixes.length) return;
+      const sectionEl = document.createElement("div");
+      sectionEl.className = "home-section";
+      sectionEl.dataset.sectionKey = "daily-mix";
+      sectionEl.style.marginBottom = "36px";
+      sectionEl.innerHTML = `<div class="section-header"><h3>Made For You</h3></div>`;
+      const grid = document.createElement("div");
+      grid.className = "card-grid";
+      mixes.forEach(mix => {
+        grid.appendChild(renderHomeCard({
+          type: "mix",
+          id: mix.id,
+          title: mix.title,
+          subtitle: mix.subtitle,
+          image: mix.image,
+          _mixRef: mix
+        }));
+      });
+      sectionEl.appendChild(grid);
+      // Insert at the very top — Made For You leads if there's enough listening history.
+      if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
+      else container.appendChild(sectionEl);
     }
 
     // Personalized row driven by /songs/{id}/suggestions on the most recently played track.
@@ -6286,6 +6429,75 @@
     }
     $("librarySyncBtn").onclick = () => triggerSyncWithSpinner($("librarySyncBtn"));
     $("topbarSyncBtn").onclick = () => triggerSyncWithSpinner($("topbarSyncBtn"));
+
+    // ── LISTENING INSIGHTS ──
+    function openInsights() {
+      const counts = getPlayCounts();
+      const entries = Object.values(counts).filter(e => e?.meta);
+      const totalPlays = entries.reduce((sum, e) => sum + (e.count || 0), 0);
+      const totalSeconds = entries.reduce((sum, e) => sum + (e.count || 0) * (e.meta.duration || 0), 0);
+      const totalMinutes = Math.round(totalSeconds / 60);
+
+      // Top songs
+      const topSongs = entries
+        .sort((a, b) => (b.count - a.count) || ((b.last || 0) - (a.last || 0)))
+        .slice(0, 5);
+
+      // Top artists by combined plays
+      const artistPlays = new Map();
+      for (const e of entries) {
+        const primary = (e.meta.artist || "").split(",")[0].trim();
+        if (!primary) continue;
+        const cur = artistPlays.get(primary) || { name: primary, plays: 0, image: e.meta.image };
+        cur.plays += (e.count || 0);
+        if (!cur.image && e.meta.image) cur.image = e.meta.image;
+        artistPlays.set(primary, cur);
+      }
+      const topArtists = Array.from(artistPlays.values())
+        .sort((a, b) => b.plays - a.plays)
+        .slice(0, 5);
+
+      const body = $("insightsBody");
+      if (!entries.length) {
+        body.innerHTML = `<p style="margin:8px 0 16px;color:var(--text-sub);">Play some music — your insights show up here once you've listened a bit.</p>`;
+      } else {
+        const fmtNum = (n) => n.toLocaleString();
+        const songRow = (e, i) => `
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bg-elevated);">
+            <span style="width:18px;color:var(--text-sub);font-size:0.78rem;">${i + 1}</span>
+            ${e.meta.image ? `<img src="${e.meta.image}" alt="" style="width:36px;height:36px;border-radius:4px;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:4px;background:var(--bg-elevated);"></div>`}
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:0.88rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${e.meta.title}</div>
+              <div style="font-size:0.74rem;color:var(--text-sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${e.meta.artist || ""}</div>
+            </div>
+            <span style="color:var(--accent);font-size:0.78rem;font-weight:600;">${e.count}×</span>
+          </div>`;
+        const artistRow = (a, i) => `
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bg-elevated);">
+            <span style="width:18px;color:var(--text-sub);font-size:0.78rem;">${i + 1}</span>
+            ${a.image ? `<img src="${a.image}" alt="" style="width:36px;height:36px;border-radius:50%;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg-elevated);"></div>`}
+            <div style="flex:1;min-width:0;font-size:0.88rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${a.name}</div>
+            <span style="color:var(--accent);font-size:0.78rem;font-weight:600;">${a.plays} plays</span>
+          </div>`;
+        body.innerHTML = `
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 0 18px;">
+            <div style="background:var(--bg-elevated);border-radius:8px;padding:14px;">
+              <div style="font-size:0.72rem;color:var(--text-sub);text-transform:uppercase;letter-spacing:0.06em;">Total plays</div>
+              <div style="font-size:1.6rem;font-weight:700;color:var(--accent);margin-top:2px;">${fmtNum(totalPlays)}</div>
+            </div>
+            <div style="background:var(--bg-elevated);border-radius:8px;padding:14px;">
+              <div style="font-size:0.72rem;color:var(--text-sub);text-transform:uppercase;letter-spacing:0.06em;">Minutes listened</div>
+              <div style="font-size:1.6rem;font-weight:700;color:var(--accent);margin-top:2px;">${fmtNum(totalMinutes)}</div>
+            </div>
+          </div>
+          ${topSongs.length ? `<h4 style="margin:8px 0 6px;font-size:0.95rem;">Top songs</h4>${topSongs.map(songRow).join("")}` : ""}
+          ${topArtists.length ? `<h4 style="margin:18px 0 6px;font-size:0.95rem;">Top artists</h4>${topArtists.map(artistRow).join("")}` : ""}
+        `;
+      }
+      openModal($("insightsModal"), $("insightsClose"));
+    }
+    $("insightsBtn").onclick = openInsights;
+    $("insightsClose").onclick = () => closeModal($("insightsModal"));
 
     // Location banner — gesture-triggered geolocation request (iOS PWA needs this)
     $("locationBannerBtn").onclick = async () => {
