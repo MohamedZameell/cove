@@ -2927,9 +2927,10 @@
       // with downloadUrl but its ranking is weaker on short queries. Merge: rank by autocomplete
       // order, fill song data from /search/songs, fetch /songs/{id} for any top picks still missing.
       // Also extract album results so movie/film queries return the soundtrack album as a top hit.
-      const [global, songsOnly] = await Promise.all([
+      const [global, songsOnly, artistsOnly] = await Promise.all([
         apiFetch(`/search?query=${encodeURIComponent(query)}`).catch(() => null),
-        apiFetch(`/search/songs?query=${encodeURIComponent(query)}&limit=40`).catch(() => null)
+        apiFetch(`/search/songs?query=${encodeURIComponent(query)}&limit=40`).catch(() => null),
+        apiFetch(`/search/artists?query=${encodeURIComponent(query)}&page=0&limit=10`).catch(() => null)
       ]);
 
       // ── SONGS ──
@@ -3003,7 +3004,30 @@
       topQuery.filter(r => r.type === "album").forEach(addAlbum);
       (global?.data?.albums?.results || []).forEach(addAlbum);
 
-      return { songs: songs.map(enrichSong), albums };
+      // ── ARTISTS ──
+      // /search/artists has the cleanest results. Augment with topQuery artist hits to keep
+      // the best match first (autocomplete picks better than the standalone artist endpoint
+      // on partial queries like "ari").
+      const artists = [];
+      const seenArtist = new Set();
+      const addArtist = (a) => {
+        if (!a?.id || seenArtist.has(a.id)) return;
+        const imgs = Array.isArray(a.image) ? a.image : [];
+        const image = (imgs.length ? imgs[imgs.length - 1]?.url : "") || (typeof a.image === "string" ? a.image : "");
+        if (!image) return;
+        seenArtist.add(a.id);
+        artists.push({
+          id: a.id,
+          title: decode(a.name || a.title || ""),
+          image: bumpImageQuality(image),
+          subtitle: a.role || "Artist"
+        });
+      };
+      topQuery.filter(r => r.type === "artist").forEach(addArtist);
+      (global?.data?.artists?.results || []).forEach(addArtist);
+      (artistsOnly?.data?.results || []).forEach(addArtist);
+
+      return { songs: songs.map(enrichSong), albums, artists };
     }
 
     // The /albums and /playlists endpoints sometimes return songs without a
@@ -4123,6 +4147,23 @@
       return card;
     }
 
+    function renderSearchArtistCard(artist) {
+      const card = document.createElement("div");
+      card.className = "card card-artist";
+      card.setAttribute("role", "button");
+      card.tabIndex = 0;
+      card.setAttribute("aria-label", `Open artist ${artist.title}`);
+      card.innerHTML = `
+        <div class="card-art">
+          ${artist.image ? `<img src="${artist.image}" alt="${artist.title}" loading="lazy">` : ""}
+        </div>
+        <div class="card-title">${artist.title}</div>
+        <div class="card-sub">${artist.subtitle || "Artist"}</div>
+      `;
+      card.onclick = () => fetchAndShowArtist(artist.id, artist.title, artist.image);
+      return card;
+    }
+
     let doSearch = debounce(async (query) => {
       if (!query.trim()) {
         dom.searchResults.innerHTML = "";
@@ -4136,14 +4177,25 @@
       ensureLocation(); // safe to call repeatedly; only prompts once
       const token = ++state.searchToken;
       try {
-        const { songs, albums } = await searchAll(query);
+        const { songs, albums, artists } = await searchAll(query);
         if (token !== state.searchToken) return;
         addSearchHistory(query);
 
         dom.searchResults.innerHTML = "";
-        if (!songs.length && !albums.length) {
+        if (!songs.length && !albums.length && !(artists && artists.length)) {
           dom.searchResults.innerHTML = `<div class="empty-state"><h3>No results</h3><p>Try a different search.</p></div>`;
           return;
+        }
+
+        if (artists && artists.length) {
+          const sec = document.createElement("div");
+          sec.style.marginBottom = "32px";
+          sec.innerHTML = `<div class="section-header"><h3>Artists</h3></div>`;
+          const grid = document.createElement("div");
+          grid.className = "card-grid";
+          artists.slice(0, 8).forEach(a => grid.appendChild(renderSearchArtistCard(a)));
+          sec.appendChild(grid);
+          dom.searchResults.appendChild(sec);
         }
 
         if (albums.length) {
