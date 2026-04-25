@@ -3080,6 +3080,8 @@
       try {
         // Show skeleton while loading
         switchPage("playlistView");
+        state._artistView = null;
+        if (typeof _removeLoadMoreBtn === "function") _removeLoadMoreBtn();
         dom.playlistViewHeader.innerHTML = `<div class="skeleton" style="height:80px;width:100%;border-radius:8px"></div>`;
         showSongListSkeleton(dom.playlistViewSongs, 8);
         const al = await apiFetch(`/albums?id=${encodeURIComponent(albumId)}`);
@@ -3131,53 +3133,190 @@
     }
 
 
+    // Artist view state — pagination + sort live across Load More clicks within a single visit.
+    state._artistView = null;
+
+    async function _fetchArtistSongsPage(id, sortBy, sortOrder, page) {
+      const url = `/artists/${encodeURIComponent(id)}/songs?sortBy=${encodeURIComponent(sortBy)}&sortOrder=${encodeURIComponent(sortOrder)}&page=${page}`;
+      const res = await apiFetch(url).catch(() => null);
+      const raw = (res?.data?.songs || res?.data?.results || []).map(normalizeSong);
+      const enriched = (await enrichMissingSrc(raw)).map(enrichSong);
+      const total = res?.data?.total ?? null;
+      return { songs: enriched, total };
+    }
+
+    function _renderArtistHeader(view) {
+      const info = view.info || {};
+      const name = view.name;
+      const cover = view.image;
+      const followers = info.followerCount ? `${Number(info.followerCount).toLocaleString()} followers` : "";
+      const verified = info.isVerified ? `<span title="Verified" style="display:inline-flex;align-items:center;gap:4px;color:var(--accent);font-size:0.75rem;margin-left:6px;vertical-align:middle"><svg style="width:14px;height:14px;fill:currentColor"><use href="#ico-check"/></svg></span>` : "";
+      const sortOpts = [
+        ["popularity", "desc", "Popular"],
+        ["latest", "desc", "Latest"],
+        ["alphabetical", "asc", "A–Z"]
+      ];
+      const sortKey = `${view.sortBy}:${view.sortOrder}`;
+      const sortHTML = sortOpts.map(([sb, so, label]) => `<option value="${sb}:${so}"${sortKey === `${sb}:${so}` ? " selected" : ""}>${label}</option>`).join("");
+
+      dom.playlistViewHeader.innerHTML = `
+        <div style="display:flex;align-items:center;gap:24px;">
+          <div style="width:96px;height:96px;border-radius:50%;background:var(--bg-elevated);overflow:hidden;flex-shrink:0;">
+            ${cover ? `<img src="${cover}" style="width:100%;height:100%;object-fit:cover" alt="">` : ""}
+          </div>
+          <div>
+            <p style="font-size:0.75rem;font-weight:600;text-transform:uppercase;color:var(--text-sub)">Artist</p>
+            <h2>${name}${verified}</h2>
+            <p style="color:var(--text-sub);font-size:0.85rem">${followers || "Top songs"}</p>
+          </div>
+        </div>
+        <div class="pl-header-controls">
+          <button class="pl-shuffle-play" id="plViewPlay" title="Play"><svg><use href="#ico-play"/></svg></button>
+          <button class="ctrl-btn" id="plViewShuffle" title="Shuffle play" style="opacity:1"><svg style="width:20px;height:20px;fill:currentColor"><use href="#ico-shuffle"/></svg></button>
+          <div style="flex:1"></div>
+          <label style="font-size:0.78rem;color:var(--text-sub);display:inline-flex;align-items:center;gap:6px;">Sort
+            <select id="artistSortSelect" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--bg-card-hover);border-radius:14px;padding:6px 10px;font-size:0.78rem;cursor:pointer;">${sortHTML}</select>
+          </label>
+        </div>
+      `;
+      $("plViewPlay").onclick = () => {
+        const songs = state._artistView?.songs || [];
+        if (songs.length) playSongAt(0, songs);
+      };
+      $("plViewShuffle").onclick = () => {
+        const songs = state._artistView?.songs || [];
+        if (!songs.length) return;
+        if (!state.shuffleOn) { state.shuffleOn = true; updateShuffleUI(); persistSettings({ shuffle_enabled: true }); }
+        playSongAt(Math.floor(Math.random() * songs.length), songs);
+      };
+      $("artistSortSelect").onchange = (e) => {
+        const [sb, so] = e.target.value.split(":");
+        _changeArtistSort(sb, so);
+      };
+    }
+
+    function _ensureLoadMoreBtn() {
+      let btn = $("artistLoadMoreBtn");
+      if (btn) return btn;
+      btn = document.createElement("button");
+      btn.id = "artistLoadMoreBtn";
+      btn.className = "btn-ghost";
+      btn.style.cssText = "margin:24px auto;display:block;padding:12px 28px;border-radius:24px;border:1px solid var(--bg-card-hover);background:var(--bg-elevated);color:var(--text);font-size:0.85rem;font-weight:600;cursor:pointer;";
+      btn.textContent = "Load more";
+      // Append to the page section after the song list
+      const page = $("playlistViewPage");
+      if (page) page.appendChild(btn);
+      return btn;
+    }
+
+    function _removeLoadMoreBtn() {
+      const btn = $("artistLoadMoreBtn");
+      if (btn) btn.remove();
+    }
+
+    function _updateLoadMoreBtn(view) {
+      const btn = _ensureLoadMoreBtn();
+      if (!view.hasMore) { btn.remove(); return; }
+      btn.disabled = !!view.loading;
+      btn.textContent = view.loading ? "Loading…" : "Load more";
+      btn.onclick = () => _loadMoreArtistSongs();
+    }
+
+    async function _loadMoreArtistSongs() {
+      const v = state._artistView;
+      if (!v || v.loading || !v.hasMore) return;
+      v.loading = true;
+      _updateLoadMoreBtn(v);
+      try {
+        const { songs: more, total } = await _fetchArtistSongsPage(v.id, v.sortBy, v.sortOrder, v.page + 1);
+        // Guard against view-change during the fetch
+        if (state._artistView !== v) return;
+        if (total != null) v.total = total;
+        v.page += 1;
+        const seen = new Set(v.songs.map(s => s.id));
+        for (const s of more) if (!seen.has(s.id)) { v.songs.push(s); seen.add(s.id); }
+        if (!more.length || (v.total != null && v.songs.length >= v.total)) v.hasMore = false;
+        state.songs = v.songs;
+        renderSongList(dom.playlistViewSongs, v.songs, v.songs);
+      } catch {
+        toast("Couldn't load more songs");
+      } finally {
+        v.loading = false;
+        _updateLoadMoreBtn(v);
+      }
+    }
+
+    async function _changeArtistSort(sortBy, sortOrder) {
+      const v = state._artistView;
+      if (!v || (v.sortBy === sortBy && v.sortOrder === sortOrder)) return;
+      v.sortBy = sortBy;
+      v.sortOrder = sortOrder;
+      v.page = 0;
+      v.songs = [];
+      v.hasMore = true;
+      v.loading = true;
+      showSongListSkeleton(dom.playlistViewSongs, 8);
+      _updateLoadMoreBtn(v);
+      try {
+        const { songs, total } = await _fetchArtistSongsPage(v.id, v.sortBy, v.sortOrder, 0);
+        if (state._artistView !== v) return;
+        v.songs = songs;
+        v.total = total ?? v.total;
+        v.hasMore = songs.length > 0 && (v.total == null || v.songs.length < v.total);
+        state.songs = v.songs;
+        renderSongList(dom.playlistViewSongs, v.songs, v.songs);
+      } catch {
+        toast("Couldn't sort songs");
+      } finally {
+        v.loading = false;
+        _updateLoadMoreBtn(v);
+      }
+    }
+
     async function fetchAndShowArtist(artistId, fallbackName, fallbackImage) {
       try {
         switchPage("playlistView");
+        _removeLoadMoreBtn();
         dom.playlistViewHeader.innerHTML = `<div class="skeleton" style="height:80px;width:100%;border-radius:8px"></div>`;
         showSongListSkeleton(dom.playlistViewSongs, 8);
 
-        // Run artist info + songs in parallel — songs is the heavier call
-        const [infoRes, songsRes] = await Promise.all([
+        const view = {
+          id: artistId,
+          name: fallbackName || "Artist",
+          image: fallbackImage || "",
+          info: null,
+          sortBy: "popularity",
+          sortOrder: "desc",
+          page: 0,
+          songs: [],
+          total: null,
+          loading: true,
+          hasMore: true
+        };
+        state._artistView = view;
+
+        const [infoRes, firstPage] = await Promise.all([
           apiFetch(`/artists/${encodeURIComponent(artistId)}`).catch(() => null),
-          apiFetch(`/artists/${encodeURIComponent(artistId)}/songs?sortBy=popularity&sortOrder=desc&page=0`).catch(() => null)
+          _fetchArtistSongsPage(artistId, view.sortBy, view.sortOrder, 0)
         ]);
+        if (state._artistView !== view) return; // user navigated away mid-fetch
 
         const info = infoRes?.data || {};
-        const name = decode(info.name || fallbackName || "Artist");
+        view.info = info;
+        view.name = decode(info.name || fallbackName || "Artist");
         const imgs = Array.isArray(info.image) ? info.image : [];
-        const cover = (imgs.length ? imgs[imgs.length - 1]?.url : "") || fallbackImage || "";
-        const followers = info.followerCount ? `${Number(info.followerCount).toLocaleString()} followers` : "";
-        const verified = info.isVerified ? `<span title="Verified" style="display:inline-flex;align-items:center;gap:4px;color:var(--accent);font-size:0.75rem;margin-left:6px;vertical-align:middle"><svg style="width:14px;height:14px;fill:currentColor"><use href="#ico-check"/></svg></span>` : "";
+        view.image = (imgs.length ? imgs[imgs.length - 1]?.url : "") || fallbackImage || "";
+        view.songs = firstPage.songs;
+        view.total = firstPage.total;
+        view.loading = false;
+        view.hasMore = view.songs.length > 0 && (view.total == null || view.songs.length < view.total);
 
-        const rawSongs = (songsRes?.data?.songs || songsRes?.data?.results || []).map(normalizeSong);
-        const enriched = (await enrichMissingSrc(rawSongs)).map(enrichSong);
+        if (!view.songs.length) { toast("No songs available for this artist"); return; }
+        state.songs = view.songs;
 
-        if (!enriched.length) { toast("No songs available for this artist"); return; }
-        state.songs = enriched;
-
-        dom.playlistViewHeader.innerHTML = `
-          <div style="display:flex;align-items:center;gap:24px;">
-            <div style="width:96px;height:96px;border-radius:50%;background:var(--bg-elevated);overflow:hidden;flex-shrink:0;">
-              ${cover ? `<img src="${cover}" style="width:100%;height:100%;object-fit:cover" alt="">` : ""}
-            </div>
-            <div>
-              <p style="font-size:0.75rem;font-weight:600;text-transform:uppercase;color:var(--text-sub)">Artist</p>
-              <h2>${name}${verified}</h2>
-              <p style="color:var(--text-sub);font-size:0.85rem">${followers || "Top songs"}</p>
-            </div>
-          </div>
-          <div class="pl-header-controls">
-            <button class="pl-shuffle-play" id="plViewPlay" title="Play"><svg><use href="#ico-play"/></svg></button>
-            <button class="ctrl-btn" id="plViewShuffle" title="Shuffle play" style="opacity:1"><svg style="width:20px;height:20px;fill:currentColor"><use href="#ico-shuffle"/></svg></button>
-          </div>
-        `;
-        renderSongList(dom.playlistViewSongs, enriched, enriched);
-        $("plViewPlay").onclick = () => playSongAt(0, enriched);
-        $("plViewShuffle").onclick = () => {
-          if (!state.shuffleOn) { state.shuffleOn = true; updateShuffleUI(); persistSettings({ shuffle_enabled: true }); }
-          playSongAt(Math.floor(Math.random() * enriched.length), enriched);
-        };
+        _renderArtistHeader(view);
+        renderSongList(dom.playlistViewSongs, view.songs, view.songs);
+        _updateLoadMoreBtn(view);
       } catch {
         toast("Failed to load artist");
       }
@@ -3403,6 +3542,8 @@
     // ── RENDER: PLAYLIST VIEW ──
     function openPlaylistView(pl) {
       state.viewingPlaylist = pl;
+      state._artistView = null;
+      if (typeof _removeLoadMoreBtn === "function") _removeLoadMoreBtn();
       const songs = (state.playlistSongs[pl.id] || []).map(enrichSong);
       const cover = pl.cover_song?.image || songs[0]?.image || "";
       dom.playlistViewHeader.innerHTML = `
@@ -4460,6 +4601,8 @@
     async function fetchAndPlayPlaylist(playlistId) {
       try {
         switchPage("playlistView");
+        state._artistView = null;
+        if (typeof _removeLoadMoreBtn === "function") _removeLoadMoreBtn();
         dom.playlistViewHeader.innerHTML = `<div class="skeleton" style="height:80px;width:100%;border-radius:8px"></div>`;
         showSongListSkeleton(dom.playlistViewSongs, 8);
         const pl = await apiFetch(`/playlists?id=${encodeURIComponent(playlistId)}`);
