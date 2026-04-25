@@ -809,6 +809,33 @@
     .card.card-artist .card-title,
     .card.card-artist .card-sub { text-align: center; }
 
+    /* Genre card variant — landscape image, title overlaid, no subtitle. */
+    .card.card-genre { padding: 0; background: transparent; }
+    .card.card-genre:hover { background: transparent; box-shadow: none; }
+    .card.card-genre .card-art {
+      aspect-ratio: 16 / 10;
+      margin-bottom: 0;
+      border-radius: var(--radius-md);
+    }
+    .card.card-genre .card-art::after {
+      content: "";
+      position: absolute; inset: 0;
+      background: linear-gradient(180deg, rgba(0,0,0,0) 40%, rgba(0,0,0,0.7) 100%);
+      pointer-events: none;
+    }
+    .card.card-genre .card-play { display: none; }
+    .card.card-genre .card-title {
+      position: absolute;
+      left: 12px; right: 12px; bottom: 10px;
+      color: #fff;
+      font-weight: 700;
+      font-size: 1.05rem;
+      margin: 0;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+      z-index: 1;
+    }
+    .card.card-genre .card-sub { display: none; }
+
     /* ── EMPTY STATE ── */
     .empty-state {
       text-align: center;
@@ -4436,18 +4463,26 @@
 
     function renderHomeCard(item) {
       const card = document.createElement("div");
-      card.className = item.type === "artist" ? "card card-artist" : "card";
+      const cls = item.type === "artist" ? "card card-artist"
+                : item.type === "genre" ? "card card-genre"
+                : "card";
+      card.className = cls;
       card.setAttribute("role", "button");
       card.tabIndex = 0;
-      const verb = item.type === "artist" ? "Open artist" : (item.type === "album" ? "Play album" : "Play playlist");
+      const verb = item.type === "artist" ? "Open artist"
+                 : item.type === "genre" ? "Browse genre"
+                 : item.type === "album" ? "Play album"
+                 : "Play playlist";
       card.setAttribute("aria-label", `${verb} ${item.title}`);
       card._itemId = item.id;
+      const showOverlay = item.type !== "artist" && item.type !== "genre";
       const sub = item.subtitle
-        || (item.songCount ? item.songCount + " songs" : (item.type === "album" ? "Album" : (item.type === "artist" ? "Artist" : "Playlist")));
+        || (item.songCount ? item.songCount + " songs"
+            : (item.type === "album" ? "Album" : (item.type === "artist" ? "Artist" : "Playlist")));
       card.innerHTML = `
         <div class="card-art">
           ${item.image ? `<img src="${item.image}" alt="${item.title}" loading="lazy">` : ""}
-          ${item.type === "artist" ? "" : `<div class="card-play"><svg><use href="#ico-play"/></svg></div>`}
+          ${showOverlay ? `<div class="card-play"><svg><use href="#ico-play"/></svg></div>` : ""}
         </div>
         <div class="card-title">${item.title}</div>
         <div class="card-sub">${sub}</div>
@@ -4455,6 +4490,13 @@
       card.onclick = () => {
         if (item.type === "album") fetchAndPlayAlbum(item.id);
         else if (item.type === "artist") fetchAndShowArtist(item.id, item.title, item.image);
+        else if (item.type === "genre") {
+          const q = item.query || item.title;
+          dom.searchInput.value = q;
+          dom.searchClear.classList.remove("hidden");
+          switchPage("search");
+          doSearch(q);
+        }
         else fetchAndPlayPlaylist(item.id);
       };
       return card;
@@ -4588,6 +4630,19 @@
       };
     }
 
+    function normalizeModuleGenre(g) {
+      // /modules genres entries shape: { image, title, tags, about }
+      const title = decode(g.title || "");
+      const query = (g.tags || g.title || "").trim();
+      return {
+        id: `genre-${title.toLowerCase()}`,
+        type: "genre",
+        title,
+        image: g.image || "",
+        query
+      };
+    }
+
     async function fetchHomeModules() {
       // The proxy reads ?language= and forwards it as a Cookie header to jiosaavn.com,
       // which biases the homepage modules toward those languages.
@@ -4662,6 +4717,12 @@
       // Featured Artists — circular row, sits between language sections and editorial picks.
       if (featuredArtists.length >= 4) {
         sections.push({ title: "Featured Artists", items: featuredArtists });
+      }
+
+      // Browse by Genre — landscape banner cards, click runs a search for the genre tag.
+      const genres = (data.genres || []).map(normalizeModuleGenre).filter(g => g.image && g.title);
+      if (genres.length) {
+        sections.push({ title: "Browse by Genre", items: genres });
       }
 
       // JioSaavn editorial picks — featured playlists, mixed languages.
