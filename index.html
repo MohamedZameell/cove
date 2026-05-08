@@ -3566,6 +3566,10 @@
           // Re-render the header so the button label/style flips immediately.
           if (state._artistView) _renderArtistHeader(state._artistView);
           renderLibraryArtists();
+          // Refresh the homepage "From Your Library" row so it picks up the
+          // change next time the user lands on home (or right now if it's
+          // already in the DOM).
+          if ($("homeSections")) renderFollowedArtistsRow();
         };
       }
     }
@@ -5667,11 +5671,22 @@
       const lang = (a.language || "").toLowerCase();
       const langCap = lang ? lang[0].toUpperCase() + lang.slice(1) : "";
       const year = a.year || a.more_info?.release_date?.slice(0, 4) || "";
-      const sub = year && langCap ? `${year} \u2022 ${langCap}` : (langCap ? `${langCap} Album` : "Album");
+      // JioSaavn's app shows the rich artist/credit string from more_info.subtitle
+      // (e.g. "Sai Abhyankkar, Sai Smriti") on every album card. That string is the
+      // single biggest reason their homepage feels useful and ours felt generic.
+      // Prefer it; fall back to artistMap names; last resort is "year \u2022 language".
+      const richSub = decode(a.more_info?.subtitle || a.subtitle || "");
+      let artistFallback = "";
+      const am = a.more_info?.artistMap?.artists;
+      if (Array.isArray(am) && am.length) {
+        artistFallback = am.slice(0, 3).map(x => decode(x.name || "")).filter(Boolean).join(", ");
+      }
+      const yearLang = year && langCap ? `${year} \u2022 ${langCap}` : (langCap ? `${langCap} Album` : "Album");
+      const sub = richSub || artistFallback || yearLang;
       return {
         id: a.id,
         type: "album",
-        title: decode(a.title || a.name || ""),
+        title: decode(a.title || a.name || "Untitled"),
         image: bumpImageQuality(typeof a.image === "string" ? a.image : (Array.isArray(a.image) ? a.image[a.image.length - 1]?.url : "")),
         subtitle: sub,
         language: lang
@@ -5679,13 +5694,23 @@
     }
 
     function normalizeModulePlaylist(p) {
-      const subRaw = p.subtitle || (p.more_info?.song_count ? `${p.more_info.song_count} songs` : "Playlist");
+      // Same pattern as albums: prefer the API's own subtitle string (curator
+      // credit, follower count, "X Songs") over our synthesized fallback. The
+      // API's version is what JioSaavn's homepage shows under each card.
+      const richSub = decode(p.more_info?.subtitle || p.subtitle || "");
+      const followerSub = p.more_info?.follower_count
+        ? `${Number(p.more_info.follower_count).toLocaleString()} followers`
+        : "";
+      const songCountSub = p.more_info?.song_count
+        ? `${p.more_info.song_count} songs`
+        : "";
+      const sub = richSub || followerSub || songCountSub || "Playlist";
       return {
         id: p.id,
         type: "playlist",
-        title: decode(p.title || p.name || ""),
+        title: decode(p.title || p.name || "Untitled"),
         image: bumpImageQuality(typeof p.image === "string" ? p.image : (Array.isArray(p.image) ? p.image[p.image.length - 1]?.url : "")),
-        subtitle: decode(subRaw),
+        subtitle: sub,
         language: (p.language || "").toLowerCase()
       };
     }
@@ -5792,6 +5817,26 @@
         sections.push({ title: "Featured Artists", items: featuredArtists });
       }
 
+      // JioSaavn editorial mood/decade mixes (e.g. "Made For Your Moods",
+      // "Endrendrum 2000s") arrive under tag_mixes / editorial. The keys can
+      // shift per region so we accept any list-shaped module that hasn't been
+      // consumed elsewhere and the items have id+image+title.
+      const editorialKeys = ["tag_mixes", "editorial", "top_playlists", "promoted", "discover"];
+      for (const key of editorialKeys) {
+        const raw = data[key];
+        if (!Array.isArray(raw)) continue;
+        const items = raw.map(normalizeModulePlaylist).filter(p => p.id && p.image && p.title);
+        if (items.length < 4) continue;
+        const niceTitle = decode(data[key + "_title"] || (
+          key === "tag_mixes" ? "Made For Your Moods" :
+          key === "editorial" ? "Editor's Picks" :
+          key === "top_playlists" ? "Top Playlists" :
+          key === "discover" ? "Discover" :
+          "Featured"
+        ));
+        sections.push({ title: niceTitle, items: items.slice(0, 12) });
+      }
+
       // Browse by Genre — landscape banner cards, click runs a search for the genre tag.
       const genres = (data.genres || []).map(normalizeModuleGenre).filter(g => g.image && g.title);
       if (genres.length) {
@@ -5852,6 +5897,45 @@
       loadMoreLikeThis().catch(() => {});
       // Personalized "Made For You" daily mixes from favorites + top-played clusters.
       renderDailyMixes();
+      // From Your Library — followed artists as circular avatars at the top of
+      // homeSections. Renders last so it ends up above Made For You.
+      renderFollowedArtistsRow();
+    }
+
+    // "From Your Library" homepage row — surfaces followed artists as a row of
+    // circular cards. JioSaavn-style. Hidden when fewer than 3 follows exist.
+    function renderFollowedArtistsRow() {
+      const container = $("homeSections");
+      if (!container) return;
+      const existing = container.querySelector('[data-section-key="followed-artists"]');
+      if (existing) existing.remove();
+
+      const list = state.followedArtists || [];
+      if (list.length < 3) return;
+
+      const sectionEl = document.createElement("div");
+      sectionEl.className = "home-section";
+      sectionEl.dataset.sectionKey = "followed-artists";
+      sectionEl.style.marginBottom = "36px";
+      sectionEl.innerHTML = `<div class="section-header"><h3>From Your Library</h3></div>`;
+      const grid = document.createElement("div");
+      grid.className = "card-grid";
+      list.slice(0, 12).forEach(a => {
+        // Re-use the existing artist card style by going through renderHomeCard.
+        grid.appendChild(renderHomeCard({
+          type: "artist",
+          id: a.id,
+          title: a.name,
+          image: a.image,
+          subtitle: a.followers
+            ? `${Number(a.followers).toLocaleString()} followers`
+            : (a.role || "Artist")
+        }));
+      });
+      sectionEl.appendChild(grid);
+      // Insert at very top so it sits above Made For You.
+      if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
+      else container.appendChild(sectionEl);
     }
 
     // Cluster the user's library by primary artist; surface up to 3 sizable clusters.
