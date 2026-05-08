@@ -138,12 +138,12 @@
 
     .sidebar-logo .logo-icon {
       width: 36px; height: 36px;
-      background: var(--accent);
       border-radius: 50%;
+      overflow: hidden;
       display: grid; place-items: center;
-      color: var(--bg);
+      background: #060508;
     }
-    .sidebar-logo .logo-icon svg { width: 20px; height: 20px; }
+    .sidebar-logo .logo-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
     .sidebar-logo h1 {
       font-family: var(--font-display);
@@ -2141,7 +2141,7 @@
     <!-- ── SIDEBAR ── -->
     <aside class="sidebar">
       <div class="sidebar-logo">
-        <div class="logo-icon"><svg width="22" height="22" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M25 7C25 7 22 4 16 4C9 4 3 9 3 16C3 23 7 28 14 28" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><path d="M5 18C10 18 15 15 19 13C23 11 27 10 29 11" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/></svg></div>
+        <div class="logo-icon"><img src="./cove-logo.png" alt="Cove logo"></div>
         <h1>Cove</h1>
       </div>
 
@@ -2536,7 +2536,7 @@
        ═══════════════════════════════════════════ */
 
     // ── CONFIG ──
-    const DEFAULT_ART = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56'%3E%3Crect width='56' height='56' rx='8' fill='%230e0d12'/%3E%3Cg transform='translate(12,12)'%3E%3Cpath d='M25 7C25 7 22 4 16 4C9 4 3 9 3 16C3 23 7 28 14 28' stroke='%23c9a55c' stroke-width='5' stroke-linecap='round' fill='none'/%3E%3Cpath d='M5 18C10 18 15 15 19 13C23 11 27 10 29 11' stroke='%23c9a55c' stroke-width='3.5' stroke-linecap='round' fill='none'/%3E%3C/g%3E%3C/svg%3E";
+    const DEFAULT_ART = "./cove-logo.png";
     const API_ENDPOINTS = [
       "https://jiosaavn-proxy.zameelraja.workers.dev/api",
       "https://jiosavan-api2.vercel.app/api"
@@ -6649,7 +6649,7 @@
       const manifest = {
         name: "Cove", short_name: "Cove", display: "standalone",
         theme_color: "#060508", background_color: "#060508", start_url: ".",
-        icons: [{ src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='48' fill='%23c9a55c'/%3E%3Cpath d='M140 46c0 0-18-18-44-18-42 0-78 30-78 72 0 42 24 48 66 48' stroke='%23060508' stroke-width='30' stroke-linecap='round' fill='none'/%3E%3Cpath d='M38 108c30 0 54-18 84-30s54-6 60 0' stroke='%23060508' stroke-width='22' stroke-linecap='round' fill='none'/%3E%3C/svg%3E", sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" }]
+        icons: [{ src: new URL("./cove-logo.png", location.href).href, sizes: "1240x1240", type: "image/png", purpose: "any maskable" }]
       };
       const url = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: "application/json" }));
       const link = document.createElement("link"); link.rel = "manifest"; link.href = url;
