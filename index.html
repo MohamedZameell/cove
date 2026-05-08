@@ -3091,18 +3091,22 @@
       if (!artist?.id) return;
       const list = state.followedArtists || (state.followedArtists = []);
       if (list.find(a => a.id === artist.id)) return;
-      list.unshift({
+      const entry = {
         id: artist.id,
         name: artist.name || artist.title || "Artist",
         image: artist.image || "",
         role: artist.role || "",
         followers: artist.followers || artist.followerCount || 0
-      });
+      };
+      list.unshift(entry);
       saveFollowedArtists();
+      // Phase F: best-effort cloud push, no-op when signed out / table missing
+      if (typeof pushFollowedArtistToCloud === "function") pushFollowedArtistToCloud(entry);
     }
     function unfollowArtist(id) {
       state.followedArtists = (state.followedArtists || []).filter(a => a.id !== id);
       saveFollowedArtists();
+      if (typeof deleteFollowedArtistFromCloud === "function") deleteFollowedArtistFromCloud(id);
     }
 
     // ── SAVED PLAYLISTS ── (JioSaavn editorial playlists the user hearted)
@@ -3115,17 +3119,20 @@
       if (!pl?.id) return;
       const list = state.savedPlaylists || (state.savedPlaylists = []);
       if (list.find(p => p.id === pl.id)) return;
-      list.unshift({
+      const entry = {
         id: pl.id,
         title: pl.title || pl.name || "Playlist",
         image: pl.image || "",
         subtitle: pl.subtitle || (pl.songCount ? `${pl.songCount} songs` : "Playlist")
-      });
+      };
+      list.unshift(entry);
       saveSavedPlaylists();
+      if (typeof pushSavedPlaylistToCloud === "function") pushSavedPlaylistToCloud(entry);
     }
     function unsavePlaylistRef(id) {
       state.savedPlaylists = (state.savedPlaylists || []).filter(p => p.id !== id);
       saveSavedPlaylists();
+      if (typeof deleteSavedPlaylistFromCloud === "function") deleteSavedPlaylistFromCloud(id);
     }
 
     // ── CLOUD SYNC (Supabase) ──
@@ -3192,6 +3199,42 @@
           const ok = await pushFavoriteToCloud(f);
           if (ok) result.favPushed++;
         }
+
+        // ── PHASE F: pull + merge followed artists and saved playlists ──
+        // Wrapped in its own try/catch so a missing table (or any error here)
+        // doesn't fail the whole sync — playlists/favorites already succeeded.
+        try {
+          const faRes = await sb.from("isai_followed_artists").select("*").eq("user_email", email);
+          if (!faRes.error) {
+            const cloudArtists = (faRes.data || []).map(r => ({
+              id: r.artist_id, name: r.name || "", image: r.image || "",
+              role: r.role || "", followers: r.followers || 0
+            }));
+            const cloudIds = new Set(cloudArtists.map(a => a.id));
+            const localOnlyArtists = (state.followedArtists || []).filter(a => !cloudIds.has(a.id));
+            state.followedArtists = [...cloudArtists, ...localOnlyArtists];
+            saveFollowedArtists();
+            for (const a of localOnlyArtists) await pushFollowedArtistToCloud(a);
+            renderLibraryArtists();
+            if ($("homeSections")) renderFollowedArtistsRow();
+          }
+        } catch (err) { console.warn("[sync] follows skipped:", err?.message || err); }
+
+        try {
+          const spRes = await sb.from("isai_saved_playlists").select("*").eq("user_email", email);
+          if (!spRes.error) {
+            const cloudPlaylists = (spRes.data || []).map(r => ({
+              id: r.playlist_id, title: r.title || "", image: r.image || "",
+              subtitle: r.subtitle || ""
+            }));
+            const cloudIds = new Set(cloudPlaylists.map(p => p.id));
+            const localOnlySaved = (state.savedPlaylists || []).filter(p => !cloudIds.has(p.id));
+            state.savedPlaylists = [...cloudPlaylists, ...localOnlySaved];
+            saveSavedPlaylists();
+            for (const p of localOnlySaved) await pushSavedPlaylistToCloud(p);
+            renderLibrarySavedPlaylists();
+          }
+        } catch (err) { console.warn("[sync] saves skipped:", err?.message || err); }
 
         renderSidebarPlaylists();
         renderFavorites();
@@ -3260,6 +3303,93 @@
           .eq("song_id", songId);
         if (error) throw error;
       } catch (err) { console.warn("[sync] delete favorite failed:", err?.message || err); }
+    }
+
+    // ── PHASE F: FOLLOWS + SAVES CLOUD SYNC ──
+    // Required Supabase tables (create once in the project SQL editor):
+    //
+    //   create table isai_followed_artists (
+    //     user_email text not null,
+    //     artist_id  text not null,
+    //     name       text,
+    //     image      text,
+    //     role       text,
+    //     followers  bigint,
+    //     updated_at timestamptz default now(),
+    //     primary key (user_email, artist_id)
+    //   );
+    //   create table isai_saved_playlists (
+    //     user_email  text not null,
+    //     playlist_id text not null,
+    //     title       text,
+    //     image       text,
+    //     subtitle    text,
+    //     updated_at  timestamptz default now(),
+    //     primary key (user_email, playlist_id)
+    //   );
+    //
+    // Until both tables exist, every push/pull below fails silently and the
+    // local-storage path keeps working — exactly the pre-Phase-F behavior.
+
+    async function pushFollowedArtistToCloud(a) {
+      if (!sb || !state.user || !a?.id) return false;
+      try {
+        const { error } = await sb.from("isai_followed_artists").upsert({
+          user_email: state.user.email,
+          artist_id: a.id,
+          name: a.name || "",
+          image: a.image || "",
+          role: a.role || "",
+          followers: Number(a.followers) || 0,
+          updated_at: new Date().toISOString()
+        });
+        if (error) throw error;
+        return true;
+      } catch (err) {
+        console.warn("[sync] push followed artist failed:", err?.message || err);
+        return false;
+      }
+    }
+
+    async function deleteFollowedArtistFromCloud(id) {
+      if (!sb || !state.user || !id) return;
+      try {
+        const { error } = await sb.from("isai_followed_artists")
+          .delete()
+          .eq("user_email", state.user.email)
+          .eq("artist_id", id);
+        if (error) throw error;
+      } catch (err) { console.warn("[sync] delete followed artist failed:", err?.message || err); }
+    }
+
+    async function pushSavedPlaylistToCloud(p) {
+      if (!sb || !state.user || !p?.id) return false;
+      try {
+        const { error } = await sb.from("isai_saved_playlists").upsert({
+          user_email: state.user.email,
+          playlist_id: p.id,
+          title: p.title || "",
+          image: p.image || "",
+          subtitle: p.subtitle || "",
+          updated_at: new Date().toISOString()
+        });
+        if (error) throw error;
+        return true;
+      } catch (err) {
+        console.warn("[sync] push saved playlist failed:", err?.message || err);
+        return false;
+      }
+    }
+
+    async function deleteSavedPlaylistFromCloud(id) {
+      if (!sb || !state.user || !id) return;
+      try {
+        const { error } = await sb.from("isai_saved_playlists")
+          .delete()
+          .eq("user_email", state.user.email)
+          .eq("playlist_id", id);
+        if (error) throw error;
+      } catch (err) { console.warn("[sync] delete saved playlist failed:", err?.message || err); }
     }
 
     async function manualSync() {
