@@ -2011,6 +2011,40 @@
       text-align: center;
     }
 
+    /* ── BROWSE TILES (Phase E) ── */
+    .browse-tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 16px;
+    }
+    .browse-tile {
+      position: relative;
+      aspect-ratio: 1.2 / 1;
+      border-radius: var(--radius-md);
+      padding: 16px;
+      cursor: pointer;
+      overflow: hidden;
+      border: none;
+      color: #fff;
+      text-align: left;
+      font-family: var(--font-display);
+      font-size: 1.15rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      transition: transform 0.18s, box-shadow 0.18s;
+    }
+    .browse-tile:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
+    .browse-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    /* ── SEARCH FILTER TABS (Phase E) ── */
+    .search-filters {
+      display: flex;
+      gap: 8px;
+      margin: 0 0 24px;
+      flex-wrap: wrap;
+    }
+    .search-filters.hidden { display: none; }
+
     /* ── HOME GREETING ── */
     .home-greeting {
       margin: 8px 0 20px;
@@ -2290,6 +2324,12 @@
         <button class="sidebar-nav-item" data-page="search">
           <svg><use href="#ico-search"/></svg><span>Search</span>
         </button>
+        <button class="sidebar-nav-item" data-page="browse">
+          <svg><use href="#ico-library"/></svg><span>Browse</span>
+        </button>
+        <button class="sidebar-nav-item" data-page="charts">
+          <svg><use href="#ico-clock"/></svg><span>Charts</span>
+        </button>
       </nav>
 
       <div class="sidebar-divider"></div>
@@ -2413,10 +2453,33 @@
           <div class="section-header"><h3>Recent Searches</h3></div>
           <div id="searchHistory" class="search-history"></div>
         </div>
+        <div id="searchFilters" class="search-filters hidden" role="tablist">
+          <button class="lib-tab active" data-search-filter="all" role="tab" aria-selected="true">All</button>
+          <button class="lib-tab" data-search-filter="songs" role="tab" aria-selected="false">Songs</button>
+          <button class="lib-tab" data-search-filter="albums" role="tab" aria-selected="false">Albums</button>
+          <button class="lib-tab" data-search-filter="artists" role="tab" aria-selected="false">Artists</button>
+          <button class="lib-tab" data-search-filter="playlists" role="tab" aria-selected="false">Playlists</button>
+        </div>
         <div id="searchResults" class="song-list"></div>
         <div id="searchEmpty">
           <div class="section-header" style="margin-top:8px"><h3>Browse All</h3></div>
           <div id="browseCategories" class="browse-grid"></div>
+        </div>
+      </section>
+
+      <!-- BROWSE PAGE (Phase E) — full mood/decade/activity tile grid -->
+      <section id="browsePage" class="page">
+        <div class="library-header"><h2>Browse</h2></div>
+        <div id="browseTilesGrid" class="browse-tiles"></div>
+      </section>
+
+      <!-- CHARTS PAGE (Phase E) — full Top 50 / chart listings -->
+      <section id="chartsPage" class="page">
+        <div class="library-header"><h2>Top Charts</h2></div>
+        <div id="chartsGrid" class="card-grid"></div>
+        <div id="chartsEmpty" class="empty-state hidden" style="padding:48px 16px;text-align:center;">
+          <h3 style="margin:0 0 8px;">No charts yet</h3>
+          <p style="margin:0;color:var(--text-sub);font-size:0.9rem;">Visit Home first so we can fetch the editorial chart list.</p>
         </div>
       </section>
 
@@ -3419,7 +3482,29 @@
       (global?.data?.artists?.results || []).forEach(addArtist);
       (artistsOnly?.data?.results || []).forEach(addArtist);
 
-      return { songs: songs.map(enrichSong), albums, artists };
+      // ── PLAYLISTS ── (Phase E)
+      // /search global returns playlists alongside songs/albums/artists. Surface
+      // them so the search-filter "Playlists" tab has content and Spotify-class
+      // result coverage is achieved.
+      const playlists = [];
+      const seenPlaylist = new Set();
+      const addPlaylist = (p) => {
+        if (!p?.id || seenPlaylist.has(p.id)) return;
+        const imgs = Array.isArray(p.image) ? p.image : [];
+        const image = (imgs.length ? imgs[imgs.length - 1]?.url : "") || (typeof p.image === "string" ? p.image : "");
+        if (!image) return;
+        seenPlaylist.add(p.id);
+        playlists.push({
+          id: p.id,
+          title: decode(p.title || p.name || ""),
+          image: bumpImageQuality(image),
+          subtitle: decode(p.subtitle || p.description || (p.songCount ? `${p.songCount} songs` : "Playlist"))
+        });
+      };
+      topQuery.filter(r => r.type === "playlist").forEach(addPlaylist);
+      (global?.data?.playlists?.results || []).forEach(addPlaylist);
+
+      return { songs: songs.map(enrichSong), albums, artists, playlists };
     }
 
     // The /albums and /playlists endpoints sometimes return songs without a
@@ -3773,6 +3858,8 @@
         renderLibraryArtists();
         renderLibrarySavedPlaylists();
       }
+      if (page === "browse") renderBrowsePage();
+      if (page === "charts") renderChartsPage();
 
       // Update sidebar active
       document.querySelectorAll(".sidebar-nav-item").forEach(b => b.classList.toggle("active", b.dataset.page === page));
@@ -4832,6 +4919,7 @@
         state.userLangs = cached.langs;
         state.locationStatus = "granted";
       }
+      if (cached?.city) state.userCity = cached.city;
     }
 
     function regionToLangs(countryCode, subdivision) {
@@ -4871,10 +4959,14 @@
         if (langs.length) {
           state.userLangs = langs;
           state.locationStatus = "granted";
+          // BigDataCloud returns `city` (sometimes empty) and `locality`. Pick
+          // the most specific non-empty one for the "What's Hot in X" row.
+          state.userCity = data.city || data.locality || data.principalSubdivision || "";
           localStorage.setItem(LOC_KEY, JSON.stringify({
             langs,
             country: data.countryCode,
             region: data.principalSubdivision,
+            city: state.userCity,
             ts: Date.now()
           }));
           toast(`Tuned for ${data.principalSubdivision || data.countryName || "your region"}`);
@@ -5069,8 +5161,10 @@
     }
 
     let doSearch = debounce(async (query) => {
+      const filters = $("searchFilters");
       if (!query.trim()) {
         dom.searchResults.innerHTML = "";
+        if (filters) filters.classList.add("hidden");
         $("searchEmpty").classList.remove("hidden");
         renderSearchHistory();
         renderBrowseCategories();
@@ -5083,18 +5177,26 @@
       ensureLocation(); // safe to call repeatedly; only prompts once
       const token = ++state.searchToken;
       try {
-        const { songs, albums, artists } = await searchAll(query);
+        const { songs, albums, artists, playlists } = await searchAll(query);
         if (token !== state.searchToken) return;
         addSearchHistory(query);
 
         dom.searchResults.innerHTML = "";
-        if (!songs.length && !albums.length && !(artists && artists.length)) {
+        const hasArtists = artists && artists.length;
+        const hasAlbums = albums.length;
+        const hasSongs = songs.length;
+        const hasPlaylists = playlists && playlists.length;
+        if (!hasSongs && !hasAlbums && !hasArtists && !hasPlaylists) {
+          if (filters) filters.classList.add("hidden");
           dom.searchResults.innerHTML = `<div class="empty-state"><h3>No results</h3><p>Try a different search.</p></div>`;
           return;
         }
 
-        if (artists && artists.length) {
+        if (filters) filters.classList.remove("hidden");
+
+        if (hasArtists) {
           const sec = document.createElement("div");
+          sec.dataset.searchKind = "artists";
           sec.style.marginBottom = "32px";
           sec.innerHTML = `<div class="section-header"><h3>Artists</h3></div>`;
           const grid = document.createElement("div");
@@ -5104,8 +5206,9 @@
           dom.searchResults.appendChild(sec);
         }
 
-        if (albums.length) {
+        if (hasAlbums) {
           const albumSection = document.createElement("div");
+          albumSection.dataset.searchKind = "albums";
           albumSection.style.marginBottom = "32px";
           albumSection.innerHTML = `<div class="section-header"><h3>Albums &amp; Movies</h3></div>`;
           const grid = document.createElement("div");
@@ -5115,19 +5218,58 @@
           dom.searchResults.appendChild(albumSection);
         }
 
-        if (songs.length) {
+        if (hasPlaylists) {
+          const plSection = document.createElement("div");
+          plSection.dataset.searchKind = "playlists";
+          plSection.style.marginBottom = "32px";
+          plSection.innerHTML = `<div class="section-header"><h3>Playlists</h3></div>`;
+          const grid = document.createElement("div");
+          grid.className = "card-grid";
+          playlists.slice(0, 12).forEach(p => {
+            // Reuse the home card render — it already routes playlists correctly.
+            grid.appendChild(renderHomeCard({ type: "playlist", id: p.id, title: p.title, image: p.image, subtitle: p.subtitle }));
+          });
+          plSection.appendChild(grid);
+          dom.searchResults.appendChild(plSection);
+        }
+
+        if (hasSongs) {
           const songSection = document.createElement("div");
+          songSection.dataset.searchKind = "songs";
           songSection.innerHTML = `<div class="section-header"><h3>Songs</h3></div>`;
           const list = document.createElement("div");
           list.className = "song-list";
           dom.searchResults.appendChild(songSection);
-          dom.searchResults.appendChild(list);
+          songSection.appendChild(list);
           renderSongList(list, songs, songs);
         }
+
+        applySearchFilter(state.searchFilter || "all");
       } catch {
         if (token === state.searchToken) dom.searchResults.innerHTML = `<div class="empty-state"><h3>No results</h3><p>Try a different search.</p></div>`;
       }
     }, 400);
+
+    // Show/hide search-result sections based on the active filter pill.
+    function applySearchFilter(kind) {
+      state.searchFilter = kind || "all";
+      document.querySelectorAll("#searchFilters .lib-tab").forEach(t => {
+        const on = t.dataset.searchFilter === state.searchFilter;
+        t.classList.toggle("active", on);
+        t.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      const sections = dom.searchResults.querySelectorAll("[data-search-kind]");
+      sections.forEach(sec => {
+        const k = sec.dataset.searchKind;
+        sec.style.display = (state.searchFilter === "all" || state.searchFilter === k) ? "" : "none";
+      });
+    }
+
+    // Wire up search filter pills once at boot.
+    (function initSearchFilters() {
+      const tabs = document.querySelectorAll("#searchFilters .lib-tab");
+      tabs.forEach(t => t.addEventListener("click", () => applySearchFilter(t.dataset.searchFilter)));
+    })();
 
     dom.searchInput.oninput = () => {
       const v = dom.searchInput.value;
@@ -5806,6 +5948,9 @@
 
     async function loadHomeFromModules() {
       const data = await fetchHomeModules();
+      // Cache the parsed modules payload so the Charts destination page can
+      // reuse it without re-hitting the network.
+      state._modulesData = data;
       const dead = new Set(getDeadAlbums());
       const newAlbums = (data.new_albums || []).map(normalizeModuleAlbum).filter(a => a.id && a.image && !dead.has(a.id));
       const playlists = (data.featured_playlists || []).map(normalizeModulePlaylist).filter(p => p.id && p.image);
@@ -5951,6 +6096,165 @@
       // From Your Library — followed artists as circular avatars at the top of
       // homeSections. Renders last so it ends up above Made For You.
       renderFollowedArtistsRow();
+      // City-aware editorial row ("What's Hot in <City>") via /search/playlists.
+      renderCityRow().catch(() => {});
+      // Trending podcasts row — best-effort, hidden if JioSaavn returns nothing.
+      renderPodcastsRow().catch(() => {});
+    }
+
+    // "What's Hot in {City}" — Phase E. Best-effort: skips if no city resolved
+    // or if the search returns fewer than 4 valid playlists.
+    async function renderCityRow() {
+      const city = state.userCity;
+      if (!city) return;
+      const container = $("homeSections");
+      if (!container) return;
+      const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(city + " hits")}&limit=12`).catch(() => null);
+      const items = (r?.data?.results || [])
+        .map(p => normalizeModulePlaylist(p))
+        .filter(p => p.id && p.image && p.title);
+      if (items.length < 4) return;
+      const existing = container.querySelector('[data-section-key="city-row"]');
+      if (existing) existing.remove();
+      const sectionEl = document.createElement("div");
+      sectionEl.className = "home-section";
+      sectionEl.dataset.sectionKey = "city-row";
+      sectionEl.style.marginBottom = "36px";
+      sectionEl.innerHTML = `<div class="section-header"><h3>What's Hot in ${escapeHtml(city)}</h3></div>`;
+      const grid = document.createElement("div");
+      grid.className = "card-grid";
+      items.slice(0, 12).forEach(p => grid.appendChild(renderHomeCard(p)));
+      sectionEl.appendChild(grid);
+      // Insert near the top — above editorial picks but below personal rows.
+      const beforeKey = ['[data-section-key="more-like"]', '[data-section-key="daily-mix"]', '[data-section-key="followed-artists"]'];
+      let anchor = null;
+      for (const sel of beforeKey) {
+        const m = container.querySelector(sel);
+        if (m) { anchor = m; break; }
+      }
+      // City row sits AFTER the personal rows but before generic editorial.
+      if (anchor && anchor.nextSibling) container.insertBefore(sectionEl, anchor.nextSibling);
+      else if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
+      else container.appendChild(sectionEl);
+    }
+
+    // Trending Podcasts — Phase E (best effort). Cards open the show URL in a
+    // new tab since Cove doesn't yet have a podcast/episode playback flow.
+    async function renderPodcastsRow() {
+      const container = $("homeSections");
+      if (!container) return;
+      const lang = (state.userLangs && state.userLangs[0]) || "english";
+      const q = lang === "english" ? "trending podcasts" : `${lang} podcasts`;
+      const r = await apiFetch(`/search/podcasts?query=${encodeURIComponent(q)}&limit=12`).catch(() => null);
+      const raw = r?.data?.results || [];
+      const items = raw
+        .map(p => {
+          const imgs = Array.isArray(p.image) ? p.image : [];
+          const image = (imgs.length ? imgs[imgs.length - 1]?.url : "") || (typeof p.image === "string" ? p.image : "");
+          if (!p.id || !image) return null;
+          return {
+            type: "podcast",
+            id: p.id,
+            title: decode(p.title || p.name || ""),
+            subtitle: decode(p.subtitle || p.description || "Podcast"),
+            image: bumpImageQuality(image),
+            url: p.url || p.perma_url || ""
+          };
+        })
+        .filter(Boolean);
+      if (items.length < 4) return;
+      const existing = container.querySelector('[data-section-key="podcasts"]');
+      if (existing) existing.remove();
+      const sectionEl = document.createElement("div");
+      sectionEl.className = "home-section";
+      sectionEl.dataset.sectionKey = "podcasts";
+      sectionEl.style.marginBottom = "36px";
+      sectionEl.innerHTML = `<div class="section-header"><h3>Trending Podcasts</h3></div>`;
+      const grid = document.createElement("div");
+      grid.className = "card-grid";
+      items.slice(0, 12).forEach(p => {
+        const card = renderHomeCard(p);
+        // Override the click — Cove doesn't yet have a podcast player. Send
+        // the user to JioSaavn's web page for the show.
+        card.onclick = () => {
+          if (p.url) window.open(p.url, "_blank", "noopener,noreferrer");
+          else toast("Podcast unavailable");
+        };
+        grid.appendChild(card);
+      });
+      sectionEl.appendChild(grid);
+      // Append at the bottom — podcasts sit below the rest of music content.
+      container.appendChild(sectionEl);
+    }
+
+    // ── BROWSE / CHARTS DESTINATIONS (Phase E) ──
+    // Curated list of mood/decade/genre tiles. Each fires the existing search
+    // flow with its query, so anything new added to JioSaavn's catalog shows up
+    // automatically. Colors are JioSaavn-style flat gradients.
+    const BROWSE_TILES = [
+      // moods / activities
+      { title: "Workout",   q: "workout hits",        color: "#e91e63" },
+      { title: "Focus",     q: "focus instrumental",  color: "#1976d2" },
+      { title: "Sleep",     q: "sleep peaceful",      color: "#4527a0" },
+      { title: "Party",     q: "party hits",          color: "#ff5722" },
+      { title: "Drive",     q: "driving songs",       color: "#0277bd" },
+      { title: "Romance",   q: "romantic hits",       color: "#c2185b" },
+      { title: "Sad",       q: "sad songs",           color: "#37474f" },
+      { title: "Chill",     q: "chill lofi",          color: "#00838f" },
+      // decades
+      { title: "70s",       q: "70s hits",            color: "#ff8f00" },
+      { title: "80s",       q: "80s hits",            color: "#6a1b9a" },
+      { title: "90s",       q: "90s hits",            color: "#2e7d32" },
+      { title: "2000s",     q: "2000s hits",          color: "#283593" },
+      { title: "2010s",     q: "2010s hits",          color: "#bf360c" },
+      // genres
+      { title: "Bollywood", q: "bollywood top hits",  color: "#e64a19" },
+      { title: "Tamil",     q: "tamil hits",          color: "#1565c0" },
+      { title: "Telugu",    q: "telugu hits",         color: "#558b2f" },
+      { title: "Punjabi",   q: "punjabi top hits",    color: "#ad1457" },
+      { title: "Pop",       q: "pop top hits",        color: "#7b1fa2" },
+      { title: "Rock",      q: "rock hits",           color: "#bf360c" },
+      { title: "Hip-Hop",   q: "hip hop hits",        color: "#ef6c00" },
+      { title: "K-Pop",     q: "kpop hits",           color: "#d81b60" },
+      { title: "Indie",     q: "indie hits",          color: "#00695c" },
+      { title: "Classical", q: "classical hits",      color: "#4e342e" },
+    ];
+
+    function renderBrowsePage() {
+      const grid = $("browseTilesGrid");
+      if (!grid || grid.dataset.rendered === "1") return;
+      grid.innerHTML = "";
+      BROWSE_TILES.forEach(t => {
+        const tile = document.createElement("button");
+        tile.className = "browse-tile";
+        tile.style.background = `linear-gradient(135deg, ${t.color}, ${t.color}cc)`;
+        tile.textContent = t.title;
+        tile.setAttribute("aria-label", `Browse ${t.title}`);
+        tile.onclick = () => {
+          dom.searchInput.value = t.q;
+          dom.searchClear.classList.remove("hidden");
+          switchPage("search");
+          doSearch(t.q);
+        };
+        grid.appendChild(tile);
+      });
+      grid.dataset.rendered = "1";
+    }
+
+    function renderChartsPage() {
+      const grid = $("chartsGrid");
+      const empty = $("chartsEmpty");
+      if (!grid) return;
+      const data = state._modulesData;
+      const charts = (data?.charts || []).map(normalizeModulePlaylist).filter(c => c.id && c.image);
+      if (!charts.length) {
+        grid.innerHTML = "";
+        if (empty) empty.classList.remove("hidden");
+        return;
+      }
+      if (empty) empty.classList.add("hidden");
+      grid.innerHTML = "";
+      charts.forEach(c => grid.appendChild(renderHomeCard(c)));
     }
 
     // "From Your Library" homepage row — surfaces followed artists as a row of
