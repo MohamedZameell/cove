@@ -1938,12 +1938,28 @@
     .sleep-menu button:hover { background: rgba(255,255,255,0.1); color: var(--text); }
     .sleep-menu button.active-timer { color: var(--accent); }
 
-    /* ── RECENTLY PLAYED CARDS ── */
+    /* ── HOME GREETING ── */
+    .home-greeting {
+      margin: 8px 0 20px;
+    }
+    .home-greeting h1 {
+      font-family: var(--font-display);
+      font-size: 1.9rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      text-wrap: balance;
+    }
+    @media (max-width: 600px) {
+      .home-greeting h1 { font-size: 1.5rem; }
+    }
+
+    /* ── QUICK PICKS (2x4 grid replacing the old hero) ── */
     .recent-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-      gap: 8px;
-      margin-bottom: 32px;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
     }
     .recent-card {
       display: flex;
@@ -1954,21 +1970,69 @@
       overflow: hidden;
       cursor: pointer;
       transition: background 0.2s, transform 0.2s;
-      height: 56px;
+      height: 64px;
+      position: relative;
+      padding-right: 12px;
     }
-    .recent-card:hover { background: rgba(240,236,228,0.09); transform: scale(1.01); }
+    .recent-card:hover { background: rgba(240,236,228,0.10); transform: translateY(-1px); }
     .recent-card img {
-      width: 56px; height: 56px;
+      width: 64px; height: 64px;
       object-fit: cover;
       flex-shrink: 0;
     }
+    .recent-card .rc-text {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
     .recent-card .rc-title {
-      font-size: 0.88rem;
+      font-size: 0.92rem;
       font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      color: var(--text);
     }
+    .recent-card .rc-sub {
+      font-size: 0.76rem;
+      font-weight: 500;
+      color: var(--text-sub);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .recent-card .rc-kind {
+      display: inline-block;
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(139,92,255,0.18);
+      color: var(--accent);
+      margin-right: 6px;
+      vertical-align: 1px;
+    }
+    .recent-card .rc-play {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%) scale(0.85);
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--bg);
+      display: grid; place-items: center;
+      border: none;
+      opacity: 0;
+      transition: opacity 0.18s, transform 0.18s;
+      cursor: pointer;
+    }
+    .recent-card:hover .rc-play { opacity: 1; transform: translateY(-50%) scale(1); }
+    .recent-card .rc-play svg { width: 14px; height: 14px; fill: currentColor; }
 
     /* ── SEARCH HISTORY ── */
     .search-history {
@@ -2232,8 +2296,8 @@
           <button id="locationBannerBtn" style="background:#fff;color:#000;border:none;padding:8px 16px;border-radius:20px;font-weight:700;font-size:0.82rem;cursor:pointer;">Allow</button>
         </div>
 
-        <!-- Recently Played Quick Cards -->
-        <div id="recentSection" class="hidden" style="margin-bottom:28px;">
+        <!-- Quick Picks: recents + Daily Mix + new releases, 2x4 -->
+        <div id="recentSection" class="hidden" style="margin-bottom:36px;">
           <div id="recentGrid" class="recent-grid"></div>
         </div>
 
@@ -5469,10 +5533,13 @@
 
       if (!sections.length) throw new Error("modules: nothing to render");
 
-      // Hero: pick the first featured playlist matching user's primary language if possible.
-      const primaryLang = userLangs[0];
-      const heroPick = playlists.find(p => p.language === primaryLang) || playlists[0] || null;
-      renderHomeHero(heroPick);
+      // (Hero removed — replaced by Quick Picks 2x4 above. featuredBanner stays
+      // hidden via its initial class.) The existing updateGreeting() handles
+      // the "Good evening, …" header and is fired earlier by loadInitial().
+
+      // Re-render Quick Picks now that new_albums are cached, so the grid can
+      // pick up editorial entries to fill the 8 slots.
+      renderRecentlyPlayed();
 
       // Render directly — no skeleton-then-replace dance since we have everything in one shot.
       const container = $("homeSections");
@@ -5649,6 +5716,9 @@
     async function loadInitial(force = false) {
       showSkeleton();
       updateGreeting();
+      // Quick Picks renders from local data only (recents + daily mix), so it can
+      // appear immediately while the homepage modules are still loading.
+      renderRecentlyPlayed();
       // Wait briefly for geolocation so the modules call is biased correctly on first load.
       if (!state.userLangs.length && state.locationStatus === "requesting") {
         await Promise.race([
@@ -5847,21 +5917,93 @@
         .slice(0, limit)
         .map(e => e.meta);
     }
+    // Quick Picks — Spotify-style mixed grid replacing the single-card hero.
+    // Pulls from three pools (recent songs / daily mixes / new albums) and pads
+    // to up to 8 items. Hidden if fewer than 4 items can be assembled (new user
+    // with no listening history → fall through to the regular homepage rows).
     function renderRecentlyPlayed() {
-      const recent = getRecentlyPlayed();
       const section = $("recentSection");
       const grid = $("recentGrid");
-      if (!recent.length) { section.classList.add("hidden"); return; }
+      if (!section || !grid) return;
+
+      const recents = getRecentlyPlayed().slice(0, 4);
+      const mixes = (typeof buildDailyMixes === "function" ? buildDailyMixes() : []).slice(0, 2);
+
+      // Pull a couple of editorial "new release" albums from the cached homepage
+      // payload if it has loaded. Best-effort — Quick Picks works without these.
+      let newAlbums = [];
+      try {
+        const cached = safeParse(localStorage.getItem(CACHE_KEY), null);
+        const raw = cached?.data?.new_albums || [];
+        newAlbums = raw.slice(0, 2)
+          .map(normalizeModuleAlbum)
+          .filter(a => a.id && a.image);
+      } catch {}
+
+      const items = [];
+      recents.forEach(s => items.push({
+        kind: "song", id: s.id, title: s.title, subtitle: s.artist,
+        image: s.image, _ref: s
+      }));
+      mixes.forEach(m => items.push({
+        kind: "mix", id: m.id, title: m.title, subtitle: m.subtitle,
+        image: m.image, _ref: m
+      }));
+      newAlbums.forEach(a => items.push({
+        kind: "album", id: a.id, title: a.title,
+        subtitle: a.subtitle || "Album", image: a.image
+      }));
+
+      if (items.length < 4) { section.classList.add("hidden"); return; }
       section.classList.remove("hidden");
       grid.innerHTML = "";
-      recent.slice(0, 8).forEach(song => {
+
+      const kindLabel = { mix: "Mix", album: "Album" };
+
+      items.slice(0, 8).forEach(item => {
         const card = document.createElement("div");
         card.className = "recent-card";
         card.setAttribute("role", "button");
         card.tabIndex = 0;
-        card.setAttribute("aria-label", `Play ${song.title}`);
-        card.innerHTML = `${song.image ? `<img src="${escapeAttr(song.image)}" alt="" loading="lazy">` : '<div style="width:56px;height:56px;background:var(--bg-elevated)"></div>'}<span class="rc-title">${escapeHtml(song.title)}</span>`;
-        card.onclick = () => playSong(song, [song]);
+        card.setAttribute("aria-label",
+          item.kind === "song" ? `Play ${item.title}` :
+          item.kind === "mix" ? `Play ${item.title}` :
+          `Open ${item.title}`);
+
+        const tag = (item.kind !== "song" && kindLabel[item.kind])
+          ? `<span class="rc-kind">${kindLabel[item.kind]}</span>`
+          : "";
+        const sub = item.subtitle
+          ? `<div class="rc-sub">${escapeHtml(item.subtitle)}</div>`
+          : "";
+        const art = item.image
+          ? `<img src="${escapeAttr(item.image)}" alt="" loading="lazy">`
+          : '<div style="width:64px;height:64px;background:var(--bg-elevated);flex-shrink:0"></div>';
+
+        card.innerHTML = `
+          ${art}
+          <div class="rc-text">
+            <div class="rc-title">${tag}${escapeHtml(item.title || "")}</div>
+            ${sub}
+          </div>
+          <button class="rc-play" aria-label="Play"><svg><use href="#ico-play"/></svg></button>
+        `;
+
+        const trigger = (e) => {
+          e?.stopPropagation();
+          if (item.kind === "song" && item._ref) {
+            playSong(item._ref, [item._ref]);
+          } else if (item.kind === "mix" && item._ref?.songs?.length) {
+            state.currentQueue = item._ref.songs.slice();
+            playSongAt(0, state.currentQueue);
+          } else if (item.kind === "album") {
+            fetchAndPlayAlbum(item.id);
+          }
+        };
+
+        card.onclick = trigger;
+        const playBtn = card.querySelector(".rc-play");
+        if (playBtn) playBtn.onclick = trigger;
         grid.appendChild(card);
       });
     }
