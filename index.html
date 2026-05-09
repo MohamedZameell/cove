@@ -6332,6 +6332,7 @@
         if (albumsForLang.length) {
           albumsForLang.forEach(a => usedAlbumIds.add(a.id));
           sections.push({
+            key: `new_${lang}_albums`,
             title: `New ${langTitle[lang] || lang} Releases`,
             items: albumsForLang.slice(0, 12)
           });
@@ -6340,6 +6341,7 @@
         if (chartsForLang.length) {
           chartsForLang.forEach(c => usedChartIds.add(c.id));
           sections.push({
+            key: `${lang}_charts`,
             title: `${langTitle[lang] || lang} Charts`,
             items: chartsForLang.slice(0, 12)
           });
@@ -6348,7 +6350,7 @@
 
       // Featured Artists — circular row, sits between language sections and editorial picks.
       if (featuredArtists.length >= 4) {
-        sections.push({ title: "Featured Artists", items: featuredArtists });
+        sections.push({ key: "featured_artists", title: "Featured Artists", items: featuredArtists });
       }
 
       // JioSaavn editorial mood/decade mixes (e.g. "Made For Your Moods",
@@ -6373,23 +6375,23 @@
           key === "discover" ? "Discover" :
           "Featured"
         ));
-        sections.push({ title: niceTitle, items: items.slice(0, 12) });
+        sections.push({ key: `editorial_${key}`, title: niceTitle, items: items.slice(0, 12) });
       }
 
       // Browse by Genre — landscape banner cards, click runs a search for the genre tag.
       const genres = (data.genres || []).map(normalizeModuleGenre).filter(g => g.image && g.title);
       if (genres.length) {
-        sections.push({ title: "Browse by Genre", items: genres });
+        sections.push({ key: "browse_genres", title: "Browse by Genre", items: genres });
       }
 
       // JioSaavn editorial picks — featured playlists, mixed languages.
       // Filtered against usedPlaylistIds so we don't repeat editorial tiles here.
       const remainingPlaylists = playlists.filter(p => !usedPlaylistIds.has(p.id));
       if (remainingPlaylists.length) {
-        sections.push({ title: "Featured on JioSaavn", items: remainingPlaylists.slice(0, 12) });
+        sections.push({ key: "featured_on_jiosaavn", title: "Featured on JioSaavn", items: remainingPlaylists.slice(0, 12) });
         remainingPlaylists.slice(0, 12).forEach(p => usedPlaylistIds.add(p.id));
         if (remainingPlaylists.length > 12) {
-          sections.push({ title: "More for You", items: remainingPlaylists.slice(12, 24) });
+          sections.push({ key: "more_for_you", title: "More for You", items: remainingPlaylists.slice(12, 24) });
           remainingPlaylists.slice(12, 24).forEach(p => usedPlaylistIds.add(p.id));
         }
       }
@@ -6397,14 +6399,38 @@
       // Leftover albums in languages not in user prefs (international content at the bottom).
       const leftoverAlbums = newAlbums.filter(a => !usedAlbumIds.has(a.id));
       if (leftoverAlbums.length) {
-        sections.push({ title: "New Releases Worldwide", items: leftoverAlbums.slice(0, 12) });
+        sections.push({ key: "worldwide_albums", title: "New Releases Worldwide", items: leftoverAlbums.slice(0, 12) });
       }
       const leftoverCharts = charts.filter(c => !usedChartIds.has(c.id));
       if (leftoverCharts.length) {
-        sections.push({ title: "More Charts", items: leftoverCharts.slice(0, 12) });
+        sections.push({ key: "worldwide_charts", title: "More Charts", items: leftoverCharts.slice(0, 12) });
       }
 
       if (!sections.length) throw new Error("modules: nothing to render");
+
+      // ── G3: UCB1 module bandit ──
+      // Sort sections by per-user UCB1 score so rows the user actually engages with
+      // float up. New (unseen) sections always go first so each module gets one
+      // guaranteed impression before being judged. Mirrors the JioSaavn 2020
+      // engineering blog approach. The first language section is pinned to the
+      // very top so the page never loses its dominant-language anchor row.
+      try {
+        const taste = loadTaste();
+        const totalImp = Object.values(taste.modules || {}).reduce((s, m) => s + (m.impressions || 0), 0);
+        const ucbScore = (sec) => {
+          const m = (taste.modules || {})[sec.key];
+          if (!m || !m.impressions) return Number.POSITIVE_INFINITY;
+          const mean = (m.reward || 0) / m.impressions;
+          return mean + Math.sqrt(2 * Math.log(Math.max(2, totalImp)) / m.impressions);
+        };
+        const pinTop = sections.length && sections[0].key && /^new_.+_albums$|_charts$/.test(sections[0].key)
+          ? sections.shift()
+          : null;
+        sections.sort((a, b) => ucbScore(b) - ucbScore(a));
+        if (pinTop) sections.unshift(pinTop);
+      } catch (err) {
+        console.warn("[ucb1] section ranking skipped:", err?.message || err);
+      }
 
       // (Hero removed — replaced by Quick Picks 2x4 above. featuredBanner stays
       // hidden via its initial class.) The existing updateGreeting() handles
@@ -6421,6 +6447,12 @@
         const sectionEl = document.createElement("div");
         sectionEl.className = "home-section";
         sectionEl.style.marginBottom = "36px";
+        // G3: tag with module key so click delegation can credit reward and so
+        // we can log impression for UCB1.
+        if (section.key) {
+          sectionEl.dataset.moduleKey = section.key;
+          if (typeof recordModuleImpression === "function") recordModuleImpression(section.key);
+        }
         sectionEl.innerHTML = `<div class="section-header"><h3>${section.title}</h3></div>`;
         const grid = document.createElement("div");
         grid.className = "card-grid";
@@ -7966,6 +7998,23 @@
       }
     };
     updateOfflineBanner();
+
+    // ── G3: UCB1 reward delegation ──
+    // One-shot delegated click handler on #homeSections — when any card inside
+    // a section gets clicked, credit the parent module so the bandit learns
+    // which rows the user actually engages with. Stays attached across re-renders.
+    (function wireModuleRewardDelegation() {
+      const root = $("homeSections");
+      if (!root || root._ucbWired) return;
+      root._ucbWired = true;
+      root.addEventListener("click", (e) => {
+        const card = e.target.closest(".card, .recent-card");
+        if (!card) return;
+        const sec = card.closest("[data-module-key]");
+        if (!sec) return;
+        if (typeof recordModuleReward === "function") recordModuleReward(sec.dataset.moduleKey, 1);
+      }, true);
+    })();
 
     // ── INIT ──
     (async () => {
