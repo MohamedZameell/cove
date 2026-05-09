@@ -1562,6 +1562,125 @@
       .recent-grid { grid-template-columns: repeat(2, 1fr); }
     }
 
+    /* ══════ RESPONSIVE OVERHAUL — fluid + multi-breakpoint ══════
+       Strategy mirrors what major streaming apps do (Spotify / Apple Music):
+       • Fluid type via clamp() so headings scale 320 → 2560 without jumps
+       • Fluid card grids so we don't end up with cramped or stretched tiles
+       • Content max-width cap on ultra-wide so rows don't span 3000px
+       • Discrete tweaks for: tiny phones, landscape phone, iPad portrait,
+         iPad landscape, laptop, desktop, big desktop, 4K
+       • Pointer-precision-aware (fine vs coarse) and orientation-aware
+       Lower in the cascade so it overrides earlier per-element rules. */
+
+    /* Fluid headings — scale from compact mobile to airy 4K */
+    .page-header h2 { font-size: clamp(1.35rem, 1.05rem + 1.1vw, 2.25rem); }
+    .section-header h3 { font-size: clamp(1.05rem, 0.92rem + 0.55vw, 1.55rem); }
+    .featured-banner .banner-title { font-size: clamp(1.5rem, 1.0rem + 1.8vw, 3rem); }
+
+    /* Fluid card grid baseline — tile size grows gently with viewport.
+       Per-breakpoint rules below still pin specific column counts where needed. */
+    @media (min-width: 769px) {
+      .card-grid {
+        grid-template-columns: repeat(auto-fill, minmax(clamp(150px, 11vw, 200px), 1fr));
+        gap: clamp(16px, 1vw, 28px);
+      }
+    }
+
+    /* Cap content width on very wide displays — keeps row reading length sane.
+       Pages center inside .main-content; bottom player / topbar stay full-bleed. */
+    @media (min-width: 1600px) {
+      .page { max-width: 1640px; margin-inline: auto; }
+      .topbar > * { max-width: 1640px; margin-inline: auto; }
+    }
+    @media (min-width: 2200px) {
+      .page { max-width: 1800px; }
+      .topbar > * { max-width: 1800px; }
+    }
+
+    /* ── iPad portrait + small laptops (769-1023) ──
+       Existing 1024 rule already collapses sidebar to 72px rail here.
+       Add: denser-but-readable card grid, bigger touch targets retained. */
+    @media (min-width: 769px) and (max-width: 1023px) {
+      .card-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 18px; }
+      .browse-grid { grid-template-columns: repeat(3, 1fr); gap: 16px; }
+      .recent-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+      .page { padding: 0 24px 24px; }
+      .topbar { padding: 14px 24px; }
+      /* Roomier sidebar rail with labels visible — iPad has the pixels */
+      :root { --sidebar-w: 96px; }
+      .sidebar-nav-item { width: 72px; flex-direction: column; gap: 4px; padding: 10px 6px; font-size: 0.62rem; line-height: 1; }
+      .sidebar-nav-item span { display: inline; font-size: 0.62rem; }
+      .sidebar-nav-item svg { margin-bottom: 2px; }
+    }
+
+    /* ── iPad landscape / small desktops (1024-1279) ──
+       Re-show sidebar labels (the max-width:1024px rule above hid them at 1024 exactly). */
+    @media (min-width: 1024px) and (max-width: 1279px) {
+      :root { --sidebar-w: 240px; }
+      .card-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 20px; }
+      .page { padding: 0 28px 28px; }
+      .sidebar-logo h1 { display: block; }
+      .sidebar-nav-item span { display: inline; }
+      .sidebar-library-header { display: flex; }
+      .sidebar-divider { display: block; }
+      .sidebar-playlists, .sidebar-user { display: block; }
+      .sidebar-logo { justify-content: flex-start; padding: 16px 20px 24px; }
+      .sidebar-nav { align-items: stretch; }
+      .sidebar-nav-item { justify-content: flex-start; padding: 10px 16px; width: auto; }
+    }
+
+    /* ── Large desktop (1600px+) ── more breathing room, bigger sidebar */
+    @media (min-width: 1600px) {
+      :root { --sidebar-w: 320px; }
+      .card-grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 24px; }
+      .page { padding: 0 40px 40px; }
+    }
+
+    /* ── 2K / 4K (1920+) ── prevents cards from looking sparse */
+    @media (min-width: 1920px) {
+      .card-grid { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 28px; }
+      .recent-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+    }
+
+    /* ── Landscape phone (short height, any small device) ──
+       Now-playing overlay needs to scroll instead of clipping. */
+    @media (max-height: 500px) and (orientation: landscape) and (max-width: 1024px) {
+      .now-playing-overlay { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+      .np-art-wrap { width: min(38vw, 200px) !important; margin: 4px auto 12px !important; }
+      .np-info { padding: 0 24px; }
+      .np-info .np-title { font-size: 1rem; }
+      .np-info .np-artist { font-size: 0.78rem; }
+      .np-progress { padding: 8px 24px 4px; }
+      .np-controls { gap: 16px; padding: 6px 0; }
+      .np-controls .np-ctrl { width: 40px; height: 40px; }
+      .np-controls .np-ctrl.np-play { width: 48px; height: 48px; }
+      .np-extra { padding: 4px 0 8px; }
+      .np-lyrics { padding: 8px 16px calc(24px + var(--safe-bottom)); }
+    }
+
+    /* ── Foldable / very narrow (Galaxy Fold front display ~280-340px) ── */
+    @media (max-width: 340px) {
+      .card-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+      .card { padding: 8px; }
+      .recent-grid { grid-template-columns: 1fr; }
+      .browse-grid { grid-template-columns: 1fr; }
+      .topbar { padding: 8px 12px; padding-top: calc(8px + var(--safe-top)); }
+      .page { padding: 0 12px 12px; }
+      .mobile-nav-btn { padding: 6px 10px; }
+      .mobile-nav-btn span { display: none; }
+    }
+
+    /* ── Tablet now-playing — give it more art room than the phone rule ── */
+    @media (min-width: 769px) and (max-width: 1279px) {
+      .np-art-wrap { width: min(48vw, 460px); }
+      .np-info .np-title { font-size: clamp(1.4rem, 1rem + 1vw, 2rem); }
+    }
+
+    /* ── Hover-only desktop polish — softer transitions on precision pointers ── */
+    @media (hover: hover) and (pointer: fine) {
+      .card { transition: transform 0.2s, background-color 0.2s, box-shadow 0.2s; }
+    }
+
     /* ── PAGE TRANSITIONS ── */
     .page {
       animation: pageFadeIn 0.25s ease;
