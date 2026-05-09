@@ -4296,9 +4296,42 @@
     });
 
     // ── RENDER: CHIPS ──
+    // Chips are ordered dynamically: chips matching the user's dominant listening
+    // language come first, then language-agnostic, then everything else. Stable
+    // sort preserves the original within-tier order (so Tamil chips stay in their
+    // curated sequence). Detects language from keywords in each chip's query.
+    function _chipLang(c) {
+      const q = (c.query || "").toLowerCase();
+      if (/\btamil\b/.test(q)) return "tamil";
+      if (/\bhindi\b|\bbollywood\b|\barijit\b/.test(q)) return "hindi";
+      if (/\bkpop\b|\bkorean\b/.test(q)) return "korean";
+      if (/\bmalayalam\b/.test(q)) return "malayalam";
+      if (/\btelugu\b/.test(q)) return "telugu";
+      if (/\bpunjabi\b/.test(q)) return "punjabi";
+      if (/\blatin\b|\breggaeton\b|\bspanish\b/.test(q)) return "spanish";
+      if (/\barabic\b/.test(q)) return "arabic";
+      if (/\b(jazz|rock|edm|rnb|hip hop|pop|90s|love|global)\b/.test(q)) return "english";
+      return "*";
+    }
     function renderChips() {
       dom.homeChips.innerHTML = "";
-      CHIPS.forEach(c => {
+      const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
+      const dominant = profile?.dominantLangs?.[0]?.lang
+        || (state.userLangs && state.userLangs[0])
+        || "english";
+      const userLangSet = new Set((state.userLangs || []).map(l => l.toLowerCase()));
+      const score = (c) => {
+        const cl = _chipLang(c);
+        if (cl === dominant) return 0;        // dominant first
+        if (userLangSet.has(cl)) return 1;    // any other selected lang
+        if (cl === "*") return 2;             // mood/universal
+        return 3;                             // everything else
+      };
+      const sorted = CHIPS.slice()
+        .map((c, i) => ({ c, i, s: score(c) }))
+        .sort((a, b) => a.s - b.s || a.i - b.i)  // stable within tier
+        .map(x => x.c);
+      sorted.forEach(c => {
         const b = document.createElement("button");
         b.className = `chip${c.label === state.activeChip ? " active" : ""}`;
         b.textContent = c.label;
@@ -6672,19 +6705,52 @@
       const playlists = (data.featured_playlists || []).map(normalizeModulePlaylist).filter(p => p.id && p.image);
       const charts = (data.charts || []).map(normalizeModulePlaylist).filter(c => c.id && c.image);
 
-      // Featured artists: dedupe across new_albums[].more_info.artistMap.artists[].
-      // /modules has no top-level featured_artists field, so we synthesize a row from the
-      // artists credited on the homepage's new releases.
+      // Featured artists: pulled from /search/artists per language, ranked by
+      // JioSaavn's own popularity. Earlier we synthesized this row from
+      // new_albums[].more_info.artistMap credits — that surfaced session musicians
+      // and obscure lyricists. Same fix that landed on the onboarding picker.
+      // We keep the new_albums credits as a last-ditch fallback when search fails.
       const artistById = new Map();
-      for (const raw of (data.new_albums || [])) {
-        const credited = raw?.more_info?.artistMap?.artists || [];
-        for (const a of credited) {
-          if (!a?.id || !a?.name || !a?.image) continue;
-          const role = (a.role || "").toLowerCase();
-          // Skip non-performers — lyricists, music directors etc make poor "Featured Artists" tiles
-          if (role && role !== "singer" && role !== "primary_artist") continue;
+      const _langsForArtists = (state.userLangs && state.userLangs.length)
+        ? state.userLangs.slice(0, 3)
+        : ["english"];
+      const _searchPerLang = 6;
+      const _featuredFetches = await Promise.all(
+        _langsForArtists.map(lang =>
+          apiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=12`).catch(() => null)
+        )
+      );
+      _featuredFetches.forEach(r => {
+        const results = r?.data?.results || [];
+        let added = 0;
+        for (const a of results) {
+          if (added >= _searchPerLang) break;
+          if (!a?.id || !a?.name) continue;
           if (artistById.has(a.id)) continue;
-          artistById.set(a.id, normalizeModuleArtist(a));
+          const imgs = Array.isArray(a.image) ? a.image : [];
+          const image = (imgs.length ? imgs[imgs.length - 1]?.url : "")
+            || (typeof a.image === "string" ? a.image : "");
+          if (!image) continue;
+          artistById.set(a.id, {
+            id: a.id, type: "artist",
+            title: decode(a.name),
+            image: bumpImageQuality ? bumpImageQuality(image) : image,
+            subtitle: a.role || "Artist"
+          });
+          added++;
+        }
+      });
+      // Fallback: if search returned nothing (rare), scrape new_albums credits.
+      if (artistById.size < 4) {
+        for (const raw of (data.new_albums || [])) {
+          const credited = raw?.more_info?.artistMap?.artists || [];
+          for (const a of credited) {
+            if (!a?.id || !a?.name || !a?.image) continue;
+            const role = (a.role || "").toLowerCase();
+            if (role && role !== "singer" && role !== "primary_artist") continue;
+            if (artistById.has(a.id)) continue;
+            artistById.set(a.id, normalizeModuleArtist(a));
+          }
         }
       }
       const featuredArtists = Array.from(artistById.values()).filter(a => a.image).slice(0, 12);
@@ -6883,50 +6949,68 @@
       renderPodcastsRow().catch(() => {});
     }
 
-    // G2: "Top {dominantLang} Hits" — replaces the old "What's Hot in {City}" row.
-    // Uses the user's dominant listening language when available, else userLangs[0].
-    // Skips silently if no language resolved or fewer than 4 valid playlists return.
+    // G2 + #6: "Top {lang} Hits" — one row per dominant language with >=25%
+    // listening share. Bilingual users (e.g. 60% Tamil / 35% Hindi) get both
+    // rows. Skips silently if a language returns fewer than 4 valid playlists.
     async function renderLangTrendingRow() {
       const container = $("homeSections");
       if (!container) return;
       const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
-      const dom = profile?.dominantLangs?.[0]?.lang;
-      const lang = dom || (state.userLangs && state.userLangs[0]) || null;
-      if (!lang) return;
       const langTitle = {
         tamil: "Tamil", hindi: "Hindi", english: "English", malayalam: "Malayalam",
         telugu: "Telugu", kannada: "Kannada", punjabi: "Punjabi", marathi: "Marathi",
         bengali: "Bengali", gujarati: "Gujarati", urdu: "Urdu", spanish: "Spanish",
         korean: "Korean"
       };
-      const niceLang = langTitle[lang] || lang.replace(/^./, c => c.toUpperCase());
-      const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=12`).catch(() => null);
-      const items = (r?.data?.results || [])
-        .map(p => normalizeModulePlaylist(p))
-        .filter(p => p.id && p.image && p.title);
-      if (items.length < 4) return;
-      const existing = container.querySelector('[data-section-key="lang-trending"]');
-      if (existing) existing.remove();
-      const sectionEl = document.createElement("div");
-      sectionEl.className = "home-section";
-      sectionEl.dataset.sectionKey = "lang-trending";
-      sectionEl.style.marginBottom = "36px";
-      sectionEl.innerHTML = `<div class="section-header"><h3>Top ${escapeHtml(niceLang)} Hits</h3></div>`;
-      const grid = document.createElement("div");
-      grid.className = "card-grid";
-      items.slice(0, 12).forEach(p => grid.appendChild(renderHomeCard(p)));
-      sectionEl.appendChild(grid);
-      // Insert just below the personal rows (more-like / daily-mix / followed-artists)
-      // and above generic editorial picks.
-      const beforeKey = ['[data-section-key="more-like"]', '[data-section-key="daily-mix"]', '[data-section-key="followed-artists"]'];
-      let anchor = null;
-      for (const sel of beforeKey) {
-        const m = container.querySelector(sel);
-        if (m) { anchor = m; break; }
+
+      // Build the list of langs to render rows for.
+      let langs;
+      if (profile?.isRich && profile.dominantLangs?.length) {
+        const top = profile.dominantLangs[0].score || 0;
+        langs = profile.dominantLangs
+          .filter((d, i) => i === 0 || (d.score / top) >= 0.25)
+          .slice(0, 2)
+          .map(d => d.lang);
+      } else {
+        langs = [(state.userLangs && state.userLangs[0]) || null].filter(Boolean);
       }
-      if (anchor && anchor.nextSibling) container.insertBefore(sectionEl, anchor.nextSibling);
-      else if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
-      else container.appendChild(sectionEl);
+      if (!langs.length) return;
+
+      // Remove any prior rows so language changes don't leave stale ones behind.
+      container.querySelectorAll('[data-section-key^="lang-trending"]').forEach(el => el.remove());
+
+      // Anchor: insert just below the personal rows (more-like / daily-mix / followed-artists)
+      // and above generic editorial picks.
+      const findAnchor = () => {
+        const beforeKey = ['[data-section-key="more-like"]', '[data-section-key="daily-mix"]', '[data-section-key="followed-artists"]', '[data-section-key^="lang-trending-"]'];
+        for (const sel of beforeKey) {
+          const all = container.querySelectorAll(sel);
+          if (all.length) return all[all.length - 1];
+        }
+        return null;
+      };
+
+      for (const lang of langs) {
+        const niceLang = langTitle[lang] || lang.replace(/^./, c => c.toUpperCase());
+        const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=12`).catch(() => null);
+        const items = (r?.data?.results || [])
+          .map(p => normalizeModulePlaylist(p))
+          .filter(p => p.id && p.image && p.title);
+        if (items.length < 4) continue;
+        const sectionEl = document.createElement("div");
+        sectionEl.className = "home-section";
+        sectionEl.dataset.sectionKey = `lang-trending-${lang}`;
+        sectionEl.style.marginBottom = "36px";
+        sectionEl.innerHTML = `<div class="section-header"><h3>Top ${escapeHtml(niceLang)} Hits</h3></div>`;
+        const grid = document.createElement("div");
+        grid.className = "card-grid";
+        items.slice(0, 12).forEach(p => grid.appendChild(renderHomeCard(p)));
+        sectionEl.appendChild(grid);
+        const anchor = findAnchor();
+        if (anchor && anchor.nextSibling) container.insertBefore(sectionEl, anchor.nextSibling);
+        else if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
+        else container.appendChild(sectionEl);
+      }
     }
 
     // Trending Podcasts — Phase E (best effort). Cards open the show URL in a
@@ -6934,9 +7018,10 @@
     async function renderPodcastsRow() {
       const container = $("homeSections");
       if (!container) return;
-      const lang = (state.userLangs && state.userLangs[0]) || "english";
-      const q = lang === "english" ? "trending podcasts" : `${lang} podcasts`;
-      const r = await apiFetch(`/search/podcasts?query=${encodeURIComponent(q)}&limit=12`).catch(() => null);
+      // Always English query — JioSaavn has very thin podcast catalogs in
+      // regional Indian languages, so "tamil podcasts" returned junk/empty.
+      // The mixed-language results from "trending podcasts" beat that for everyone.
+      const r = await apiFetch(`/search/podcasts?query=${encodeURIComponent("trending podcasts")}&limit=12`).catch(() => null);
       const raw = r?.data?.results || [];
       const items = raw
         .map(p => {
@@ -7648,9 +7733,18 @@
       try {
         const cached = safeParse(localStorage.getItem(CACHE_KEY), null);
         const raw = cached?.data?.new_albums || [];
-        newAlbums = raw.slice(0, 2)
-          .map(normalizeModuleAlbum)
-          .filter(a => a.id && a.image);
+        // Prefer albums in the user's dominant language so Quick Picks doesn't
+        // sneak a random Hindi album into a Tamil-listener's grid.
+        const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
+        const preferredLangs = new Set([
+          ...(profile?.dominantLangs || []).map(d => d.lang),
+          ...(state.userLangs || [])
+        ]);
+        const normalized = raw.map(normalizeModuleAlbum).filter(a => a.id && a.image);
+        const inLang = preferredLangs.size
+          ? normalized.filter(a => preferredLangs.has((a.language || "").toLowerCase()))
+          : [];
+        newAlbums = (inLang.length ? inLang : normalized).slice(0, 2);
       } catch {}
 
       const items = [];
@@ -8327,6 +8421,27 @@
       { label: "Devotional", q: "devotional songs", color: "#FF6437" },
       { label: "Classical", q: "classical music carnatic", color: "#2D46B9" }
     ];
+
+    // Year-stale-query auto-bump. JioSaavn ranks freshness, so a hardcoded "2025"
+    // baked into a query string drops in relevance every Jan 1. This one-shot
+    // upgrades any 2022-2025 occurrence inside the catalog/chip/browse arrays
+    // to the current year. Idempotent — re-running on already-current is a no-op.
+    (function normalizeQueryYears() {
+      const CUR_YEAR = String(new Date().getFullYear());
+      const STALE = /\b202[2-5]\b/g;
+      const fix = (s) => (typeof s === "string" ? s.replace(STALE, CUR_YEAR) : s);
+      const arrays = [
+        typeof CHIPS !== "undefined" ? CHIPS : null,
+        typeof BROWSE_CATS !== "undefined" ? BROWSE_CATS : null,
+        typeof BROWSE_TILES !== "undefined" ? BROWSE_TILES : null,
+        typeof HOME_CATALOG !== "undefined" ? HOME_CATALOG : null
+      ].filter(Boolean);
+      arrays.forEach(arr => arr.forEach(item => {
+        if (item.query) item.query = fix(item.query);
+        if (item.q) item.q = fix(item.q);
+        if (Array.isArray(item.queries)) item.queries = item.queries.map(fix);
+      }));
+    })();
 
     function renderBrowseCategories() {
       const grid = $("browseCategories");
