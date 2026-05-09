@@ -5781,43 +5781,139 @@
         doneBtn.disabled = true;
         artWrap.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-sub);padding:24px;">Loading artists…</div>';
 
-        // Build the artist pool by querying /search/artists per selected language.
-        // JioSaavn's search ranks by popularity, so this returns canonical artists
-        // (Anirudh, A.R. Rahman, Ed Sheeran, Arijit Singh) instead of obscure
-        // credits from whatever happens to be on this week's new_albums.
-        // Per-language quota of 8 keeps the grid balanced across picks.
-        const seen = new Map();
-        const PER_LANG = 8;
-        const queriesPerLang = (lang) => {
-          // "top {lang} singers" tends to surface vocalists; the bare lang name is a fallback.
-          return [`top ${lang} singers`, `${lang} singers`, `${lang}`];
+        // Build the artist pool from a CURATED per-language seed list of canonical
+        // popular artists (the same approach Spotify and JioSaavn's own onboarding
+        // take — there is no "/top-artists?language=" endpoint in the JioSaavn API,
+        // verified across saavn.dev, sumitkolhe/jiosaavn-api, and JioSaavn's
+        // webapi.getLaunchData (which returns a global, non-language-filtered list).
+        // We resolve each seed by id via /artists/{id} so we get the canonical
+        // image + role, and fall back to /search/artists then /modules credits if
+        // any IDs 404 or the language has too few entries.
+        const CURATED_ARTISTS = {
+          tamil: [
+            { id: "455663", name: "Anirudh Ravichander" },
+            { id: "456269", name: "A.R. Rahman" },
+            { id: "456091", name: "Yuvan Shankar Raja" },
+            { id: "457536", name: "Ilaiyaraaja" },
+            { id: "455454", name: "G.V. Prakash Kumar" },
+            { id: "689580", name: "Sid Sriram" },
+            { id: "455243", name: "Harris Jayaraj" },
+            { id: "773021", name: "Hiphop Tamizha" }
+          ],
+          hindi: [
+            { id: "459320", name: "Arijit Singh" },
+            { id: "455130", name: "Pritam" },
+            { id: "459750", name: "Shreya Ghoshal" },
+            { id: "464932", name: "Neha Kakkar" },
+            { id: "485956", name: "Yo Yo Honey Singh" },
+            { id: "455120", name: "Alka Yagnik" },
+            { id: "455142", name: "Kumar Sanu" },
+            { id: "455127", name: "Udit Narayan" }
+          ],
+          english: [
+            { id: "614200", name: "The Weeknd" },
+            { id: "562955", name: "Ed Sheeran" },
+            { id: "600555", name: "Taylor Swift" },
+            { id: "567980", name: "Justin Bieber" },
+            { id: "605340", name: "Drake" },
+            { id: "703105", name: "Billie Eilish" },
+            { id: "581175", name: "Bruno Mars" },
+            { id: "568565", name: "Dua Lipa" }
+          ],
+          telugu: [
+            { id: "702553", name: "Devi Sri Prasad" },
+            { id: "459072", name: "S. S. Thaman" },
+            { id: "676277", name: "Anurag Kulkarni" },
+            { id: "689580", name: "Sid Sriram" },
+            { id: "455461", name: "M. M. Keeravani" },
+            { id: "741999", name: "S. P. Balasubrahmanyam" }
+          ],
+          malayalam: [
+            { id: "455143", name: "K. J. Yesudas" },
+            { id: "455162", name: "Hariharan" },
+            { id: "679242", name: "Vineeth Sreenivasan" },
+            { id: "678975", name: "Shaan Rahman" },
+            { id: "688492", name: "Sushin Shyam" },
+            { id: "685133", name: "Jakes Bejoy" }
+          ],
+          punjabi: [
+            { id: "881158", name: "Diljit Dosanjh" },
+            { id: "881144", name: "Sidhu Moose Wala" },
+            { id: "881127", name: "AP Dhillon" },
+            { id: "881130", name: "Karan Aujla" },
+            { id: "485956", name: "Yo Yo Honey Singh" },
+            { id: "881172", name: "Guru Randhawa" }
+          ],
+          korean: [
+            { id: "3635988", name: "BTS" },
+            { id: "3818635", name: "BLACKPINK" },
+            { id: "4396081", name: "Stray Kids" },
+            { id: "4396080", name: "NewJeans" },
+            { id: "4396079", name: "TWICE" },
+            { id: "4396082", name: "SEVENTEEN" }
+          ]
         };
+
+        const seen = new Map();
+        const PER_LANG = 6;
+
+        // Stage 1: resolve curated IDs in parallel per language. Skips 404s gracefully.
+        const fetchArtistMeta = async (id) => {
+          try {
+            const r = await apiFetch(`/artists/${encodeURIComponent(id)}?songCount=0&albumCount=0`);
+            const a = r?.data;
+            if (!a?.id || !a?.name) return null;
+            const imgs = Array.isArray(a.image) ? a.image : [];
+            const image = (imgs.length ? imgs[imgs.length - 1]?.url : "")
+              || (typeof a.image === "string" ? a.image : "");
+            if (!image) return null;
+            return {
+              id: a.id, name: decode(a.name), image,
+              role: a.role || a.type || "Artist", followers: a.followerCount || 0
+            };
+          } catch { return null; }
+        };
+
         for (const lang of state.userLangs) {
+          const seeds = CURATED_ARTISTS[lang] || [];
+          if (!seeds.length) continue;
+          const resolved = await Promise.all(seeds.map(s => fetchArtistMeta(s.id)));
           let added = 0;
-          for (const q of queriesPerLang(lang)) {
+          for (const a of resolved) {
+            if (!a) continue;
             if (added >= PER_LANG) break;
+            if (seen.has(a.id)) continue;
+            seen.set(a.id, a);
+            added++;
+          }
+        }
+
+        // Stage 2: backfill via /search/artists if a language returned <3 valid entries
+        // (covers languages we didn't curate, e.g. bengali / spanish / arabic).
+        const undercoveredLangs = state.userLangs.filter(l => !CURATED_ARTISTS[l] || CURATED_ARTISTS[l].length < 3);
+        if (undercoveredLangs.length || seen.size < state.userLangs.length * 4) {
+          const searchLangs = undercoveredLangs.length ? undercoveredLangs : state.userLangs;
+          for (const lang of searchLangs) {
             try {
-              const r = await apiFetch(`/search/artists?query=${encodeURIComponent(q)}&page=0&limit=15`);
+              const r = await apiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=10`);
               const results = r?.data?.results || [];
+              let added = 0;
               for (const a of results) {
                 if (added >= PER_LANG) break;
-                if (!a?.id || !a?.name) continue;
-                if (seen.has(a.id)) continue;
+                if (!a?.id || !a?.name || seen.has(a.id)) continue;
                 const imgs = Array.isArray(a.image) ? a.image : [];
                 const image = (imgs.length ? imgs[imgs.length - 1]?.url : "")
                   || (typeof a.image === "string" ? a.image : "");
                 if (!image) continue;
-                seen.set(a.id, {
-                  id: a.id, name: decode(a.name), image,
-                  role: a.role || "Artist", followers: 0
-                });
+                seen.set(a.id, { id: a.id, name: decode(a.name), image, role: a.role || "Artist", followers: 0 });
                 added++;
               }
             } catch {}
           }
         }
-        // Fallback: if search totally failed, scrape /modules credits (old behavior).
-        if (seen.size < 6) {
+
+        // Last-ditch: scrape /modules new_albums credits if everything else flopped.
+        if (seen.size < 4) {
           let modules = state._modulesData;
           if (!modules) {
             try { modules = await fetchHomeModules(); state._modulesData = modules; } catch {}
@@ -5831,10 +5927,7 @@
               const role = (a.role || "").toLowerCase();
               if (role && role !== "singer" && role !== "primary_artist") continue;
               if (seen.has(a.id)) continue;
-              seen.set(a.id, {
-                id: a.id, name: decode(a.name), image: a.image,
-                role: a.role || "Artist", followers: 0
-              });
+              seen.set(a.id, { id: a.id, name: decode(a.name), image: a.image, role: a.role || "Artist", followers: 0 });
               if (seen.size >= 24) break;
             }
             if (seen.size >= 24) break;
