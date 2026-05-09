@@ -6731,6 +6731,8 @@
 
       // Background: insert "More Like X" personalized row using last-played seed.
       loadMoreLikeThis().catch(() => {});
+      // G5: Similar Artists row from co-occurrence in top-song suggestions
+      loadSimilarArtistsRow().catch(() => {});
       // Personalized "Made For You" daily mixes from favorites + top-played clusters.
       renderDailyMixes();
       // From Your Library — followed artists as circular avatars at the top of
@@ -7021,11 +7023,20 @@
       else container.appendChild(sectionEl);
     }
 
-    // Personalized row driven by /songs/{id}/suggestions on the most recently played track.
-    // Renders as song cards that play directly into a queue of all suggestions.
+    // Personalized row driven by /songs/{id}/suggestions.
+    // G5: prefers the user's TOP-played song (stable signal) over just the most
+    // recent play, so the row doesn't whiplash with every new track.
     async function loadMoreLikeThis() {
-      const recent = getRecentlyPlayed();
-      const seed = recent.find(s => s && s.id);
+      let seed = null;
+      // Top-played first — getTopPlayed returns full song meta sorted by count
+      try {
+        const top = (typeof getTopPlayed === "function") ? getTopPlayed(1) : [];
+        if (top[0]?.id) seed = top[0];
+      } catch {}
+      if (!seed) {
+        const recent = getRecentlyPlayed();
+        seed = recent.find(s => s && s.id);
+      }
       if (!seed) return;
       let raw;
       try {
@@ -7079,6 +7090,80 @@
       } else {
         container.appendChild(sectionEl);
       }
+    }
+
+    // ── G5: "Similar Artists" homepage row ──
+    // Builds a circular-artist row from co-occurrence in /songs/{id}/suggestions
+    // for the user's top played songs. This is the closest content-based filter
+    // to collaborative filtering we can do without other users' data.
+    // Cheap: 1-3 API calls reusing endpoints we already use for radio.
+    async function loadSimilarArtistsRow() {
+      const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
+      if (!profile || !profile.isRich) return;
+      // Pick up to 3 seed songs from top-played; widens the suggestion pool.
+      const seeds = (typeof getTopPlayed === "function") ? getTopPlayed(3) : [];
+      if (!seeds.length) return;
+
+      // Tally artists across all suggestion responses.
+      const tally = new Map(); // artistId -> {id, name, image, role, count}
+      const skipNames = new Set([
+        ...(state.followedArtists || []).map(a => (a.name || "").toLowerCase()),
+        ...profile.topArtists.slice(0, 3).map(a => a.name.toLowerCase())
+      ]);
+
+      const responses = await Promise.all(seeds.map(s =>
+        apiFetch(`/songs/${encodeURIComponent(s.id)}/suggestions`).catch(() => null)
+      ));
+      for (const r of responses) {
+        const raw = Array.isArray(r?.data) ? r.data : [];
+        for (const item of raw) {
+          const primary = item?.artists?.primary || [];
+          for (const a of primary) {
+            if (!a?.id || !a?.name) continue;
+            const nameLc = a.name.toLowerCase();
+            if (skipNames.has(nameLc)) continue;
+            const role = (a.role || "").toLowerCase();
+            if (role && role !== "singer" && role !== "primary_artist") continue;
+            const imgs = Array.isArray(a.image) ? a.image : [];
+            const image = (imgs.length ? imgs[imgs.length - 1]?.url : "")
+              || (typeof a.image === "string" ? a.image : "");
+            const cur = tally.get(a.id) || { id: a.id, name: decode(a.name), image, role: a.role || "Artist", count: 0 };
+            cur.count++;
+            if (!cur.image && image) cur.image = image;
+            tally.set(a.id, cur);
+          }
+        }
+      }
+      const ranked = Array.from(tally.values())
+        .filter(a => a.image && a.count >= 1)
+        .sort((x, y) => y.count - x.count)
+        .slice(0, 12);
+      if (ranked.length < 4) return;
+
+      const container = $("homeSections");
+      if (!container) return;
+      const existing = container.querySelector('[data-section-key="similar-artists"]');
+      if (existing) existing.remove();
+
+      const sectionEl = document.createElement("div");
+      sectionEl.className = "home-section";
+      sectionEl.dataset.sectionKey = "similar-artists";
+      sectionEl.style.marginBottom = "36px";
+      sectionEl.innerHTML = `<div class="section-header"><h3>Similar Artists</h3></div>`;
+      const grid = document.createElement("div");
+      grid.className = "card-grid";
+      ranked.forEach(a => {
+        grid.appendChild(renderSearchArtistCard({
+          id: a.id, title: a.name, image: a.image, subtitle: a.role || "Artist"
+        }));
+      });
+      sectionEl.appendChild(grid);
+
+      // Insert just after "more-like" if present, else after the first section.
+      const anchor = container.querySelector('[data-section-key="more-like"]')
+        || container.firstElementChild;
+      if (anchor && anchor.nextSibling) container.insertBefore(sectionEl, anchor.nextSibling);
+      else container.appendChild(sectionEl);
     }
 
     async function validateAlbumsInBackground(albums) {
