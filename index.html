@@ -4428,7 +4428,7 @@
       row.dataset.songId = song.id;
       row.innerHTML = `
         <span class="row-num" data-idx="${index + 1}"><span class="num-text">${index + 1}</span><span class="hover-play"><svg style="width:14px;height:14px;fill:currentColor"><use href="#ico-play"/></svg></span></span>
-        <div class="row-art">${song.image ? `<img src="${escapeAttr(song.image)}" alt="" loading="lazy">` : ""}</div>
+        <div class="row-art">${song.image ? `<img src="${escapeAttr(imgSized(song.image, 48))}" alt="" loading="lazy">` : ""}</div>
         <div class="row-info" role="button" tabindex="0">
           <div class="row-title">${escapeHtml(song.title)}</div>
           <div class="row-artist">${escapeHtml(song.artist)}</div>
@@ -6642,6 +6642,18 @@
         .replace(/-50x50\./, "-500x500.");
     }
 
+    // A2: pick the right CDN variant for the rendered size. JioSaavn URLs have a
+    // -NNNxNNN. token; we just rewrite it. Saves ~70-90% bandwidth on small
+    // thumbnails (e.g. a 40px song-row art was loading the 500px variant).
+    // Valid variants: 50, 150, 500. We snap to whichever is just bigger than `target * dpr`.
+    function imgSized(url, target) {
+      if (!url) return url;
+      const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+      const eff = target * Math.min(dpr, 2);  // cap dpr factor at 2 — 500px is the largest variant
+      const variant = eff <= 50 ? 50 : eff <= 150 ? 150 : 500;
+      return url.replace(/-(50|150|500)x(50|150|500)\./, `-${variant}x${variant}.`);
+    }
+
     function normalizeModuleAlbum(a) {
       const lang = (a.language || "").toLowerCase();
       const langCap = lang ? lang[0].toUpperCase() + lang.slice(1) : "";
@@ -8606,7 +8618,7 @@
         const songRow = (e, i) => `
           <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bg-elevated);">
             <span style="width:18px;color:var(--text-sub);font-size:0.78rem;">${i + 1}</span>
-            ${e.meta.image ? `<img src="${escapeAttr(e.meta.image)}" alt="" style="width:36px;height:36px;border-radius:4px;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:4px;background:var(--bg-elevated);"></div>`}
+            ${e.meta.image ? `<img src="${escapeAttr(imgSized(e.meta.image, 36))}" alt="" loading="lazy" style="width:36px;height:36px;border-radius:4px;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:4px;background:var(--bg-elevated);"></div>`}
             <div style="flex:1;min-width:0;">
               <div style="font-size:0.88rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(e.meta.title)}</div>
               <div style="font-size:0.74rem;color:var(--text-sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(e.meta.artist || "")}</div>
@@ -8616,7 +8628,7 @@
         const artistRow = (a, i) => `
           <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bg-elevated);">
             <span style="width:18px;color:var(--text-sub);font-size:0.78rem;">${i + 1}</span>
-            ${a.image ? `<img src="${escapeAttr(a.image)}" alt="" style="width:36px;height:36px;border-radius:50%;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg-elevated);"></div>`}
+            ${a.image ? `<img src="${escapeAttr(imgSized(a.image, 36))}" alt="" loading="lazy" style="width:36px;height:36px;border-radius:50%;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg-elevated);"></div>`}
             <div style="flex:1;min-width:0;font-size:0.88rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(a.name)}</div>
             <span style="color:var(--accent);font-size:0.78rem;font-weight:600;">${a.plays} plays</span>
           </div>`;
