@@ -4608,6 +4608,8 @@
       // Track recently played + bump play count for "On Repeat"
       addToRecentlyPlayed(song);
       incrementPlayCount(song);
+      // G1: feed taste profile (artist + language tally with recency decay)
+      recordTaste("play", song);
 
       // Smart Radio: keep at least 5 songs queued ahead of the current index.
       if (state.radioMode) {
@@ -4990,6 +4992,8 @@
         state.favorites.unshift({ song_id: song.id, song });
         toast("Added to Liked Songs");
         pushFavoriteToCloud({ song_id: song.id, song });
+        // G1: save is a strong positive signal (+10 per artist+lang)
+        recordTaste("save", song);
       }
       saveFavorites();
       updateNowFav();
@@ -6977,6 +6981,107 @@
         .slice(0, limit)
         .map(e => e.meta);
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ── TASTE PROFILE (Phase G1) ──
+    // Per-user implicit-feedback signal store driving homepage personalization.
+    // Records play/save/share/skip events into a bag-of-artists + bag-of-languages,
+    // plus per-module UCB1 stats for G3. Recency-decayed exponentially with τ=30d.
+    // All client-side, localStorage-backed, fail-quiet on quota.
+    //
+    // Weight conventions cribbed from Spotify/JioSaavn implicit-feedback literature:
+    //   stream (>30s)  +5     save  +10    share +15    repeat-in-24h +8
+    //   click           +1    skip <30s -2.5 (floor 0)
+    // ══════════════════════════════════════════════════════════════════════════
+    const TASTE_TAU_DAYS = 30;
+    const TASTE_W = { play: 5, click: 1, save: 10, share: 15, skip: -2.5, repeat: 8 };
+    const TASTE_RICH_THRESHOLD = 10; // total plays before we trust the profile
+
+    function tasteKey() { return userKey("taste"); }
+    function loadTaste() {
+      return safeParse(localStorage.getItem(tasteKey()), null) || {
+        artists: {}, langs: {}, modules: {}, plays: 0, skips: 0, createdAt: Date.now()
+      };
+    }
+    function saveTaste(t) {
+      try { localStorage.setItem(tasteKey(), JSON.stringify(t)); } catch {}
+    }
+    // Apply exp(-Δdays / τ) decay so old plays fade. Returns current effective score.
+    function _tasteDecayed(entry) {
+      if (!entry || !entry.last) return entry?.score || 0;
+      const days = (Date.now() - entry.last) / 86_400_000;
+      return (entry.score || 0) * Math.exp(-days / TASTE_TAU_DAYS);
+    }
+    // Bump artist + language scores for a song event. Floor at 0 — skips can't push negative.
+    function recordTaste(eventType, song) {
+      if (!song) return;
+      const w = TASTE_W[eventType];
+      if (!w) return;
+      const t = loadTaste();
+      const now = Date.now();
+      const artistList = (song.artist || "").split(",").map(s => s.trim()).filter(Boolean);
+      artistList.forEach(name => {
+        const cur = t.artists[name] || { score: 0, last: 0 };
+        cur.score = Math.max(0, _tasteDecayed(cur) + w);
+        cur.last = now;
+        t.artists[name] = cur;
+      });
+      const lang = (song.language || "").toLowerCase();
+      if (lang) {
+        const cur = t.langs[lang] || { score: 0, last: 0 };
+        cur.score = Math.max(0, _tasteDecayed(cur) + w);
+        cur.last = now;
+        t.langs[lang] = cur;
+      }
+      if (eventType === "play") t.plays = (t.plays || 0) + 1;
+      if (eventType === "skip") t.skips = (t.skips || 0) + 1;
+      saveTaste(t);
+    }
+    // Module impression / reward — used by G3 UCB1 row ordering.
+    function recordModuleImpression(key) {
+      if (!key) return;
+      const t = loadTaste();
+      const cur = t.modules[key] || { impressions: 0, reward: 0, last: 0 };
+      cur.impressions = (cur.impressions || 0) + 1;
+      cur.last = Date.now();
+      t.modules[key] = cur;
+      saveTaste(t);
+    }
+    function recordModuleReward(key, amount = 1) {
+      if (!key) return;
+      const t = loadTaste();
+      const cur = t.modules[key] || { impressions: 0, reward: 0, last: 0 };
+      cur.reward = (cur.reward || 0) + amount;
+      cur.last = Date.now();
+      t.modules[key] = cur;
+      saveTaste(t);
+    }
+    // Public read-out used by homepage rendering. Returns ranked artists/langs
+    // plus an `isRich` flag — below threshold the home should fall back to
+    // userLangs ordering so cold-start doesn't feel random.
+    function getTasteProfile() {
+      const t = loadTaste();
+      const artistArr = Object.entries(t.artists || {})
+        .map(([name, e]) => ({ name, score: _tasteDecayed(e) }))
+        .filter(a => a.score > 0)
+        .sort((a, b) => b.score - a.score);
+      const langArr = Object.entries(t.langs || {})
+        .map(([lang, e]) => ({ lang, score: _tasteDecayed(e) }))
+        .filter(a => a.score > 0)
+        .sort((a, b) => b.score - a.score);
+      return {
+        artistScores: Object.fromEntries(artistArr.map(a => [a.name, a.score])),
+        langScores: Object.fromEntries(langArr.map(a => [a.lang, a.score])),
+        topArtists: artistArr.slice(0, 12),
+        dominantLangs: langArr.slice(0, 5),
+        totalPlays: t.plays || 0,
+        isRich: (t.plays || 0) >= TASTE_RICH_THRESHOLD,
+        raw: t
+      };
+    }
+    // Debug helper — paste `cove.taste()` in the console to inspect.
+    if (typeof window !== "undefined") window.cove = Object.assign(window.cove || {}, { taste: getTasteProfile });
+
     // Quick Picks — Spotify-style mixed grid replacing the single-card hero.
     // Pulls from three pools (recent songs / daily mixes / new albums) and pads
     // to up to 8 items. Hidden if fewer than 4 items can be assembled (new user
