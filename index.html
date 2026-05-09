@@ -8113,11 +8113,73 @@
     audio.onplay = () => {
       updatePlayBtn(true); updateNpControls(); updateMobPlayBtn(true); refreshActiveSongRows();
       if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+      // B7: if a resume position was queued from boot, seek to it on first play
+      if (state._pendingResume && state._pendingResume.songId === currentSong()?.id) {
+        try { audio.currentTime = state._pendingResume.t || 0; } catch {}
+        state._pendingResume = null;
+      }
     };
     audio.onpause = () => {
       updatePlayBtn(false); updateNpControls(); updateMobPlayBtn(false); refreshActiveSongRows();
       if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+      saveResumePoint();
     };
+
+    // ── B7: RESUME WHERE LEFT OFF ──
+    // Persist current queue + index + currentTime so a reload mid-song doesn't
+    // forget your place. We don't autoplay (browser policy blocks it) — restore
+    // the queue silently; first user-initiated play seeks to the saved offset.
+    const RESUME_KEY = "isai_resume_v1";
+    let _lastResumeSave = 0;
+    function saveResumePoint() {
+      const cur = currentSong();
+      if (!cur || !cur.id) return;
+      // Throttle to avoid hammering localStorage
+      const now = Date.now();
+      if (now - _lastResumeSave < 4000 && audio.paused === false) return;
+      _lastResumeSave = now;
+      try {
+        const payload = {
+          songId: cur.id,
+          t: audio.currentTime || 0,
+          // Cap queue size to keep localStorage write small
+          queue: (state.currentQueue || []).slice(0, 50),
+          idx: state.currentIndex,
+          savedAt: now
+        };
+        localStorage.setItem(RESUME_KEY, JSON.stringify(payload));
+      } catch {}
+    }
+    function loadResumePoint() {
+      try {
+        const r = JSON.parse(localStorage.getItem(RESUME_KEY) || "null");
+        if (!r || !r.songId || !Array.isArray(r.queue) || r.queue.length === 0) return;
+        // Drop stale resume points older than 14 days
+        if (Date.now() - (r.savedAt || 0) > 14 * 86_400_000) return;
+        const idx = (typeof r.idx === "number" && r.idx >= 0 && r.idx < r.queue.length) ? r.idx : 0;
+        const song = r.queue[idx];
+        if (!song || !song.src) return;
+        state.currentQueue = r.queue;
+        state.currentIndex = idx;
+        state.unshuffledQueue = [];
+        state._pendingResume = { songId: r.songId, t: r.t || 0 };
+        // Stage audio without auto-playing — load the src so the play button works
+        try {
+          audio.src = song.src;
+          audio.load();
+        } catch {}
+        // Reflect now-playing UI bits without starting playback
+        updateNowPlayingOverlay?.(song);
+        if (typeof updateNowFav === "function") updateNowFav();
+        if (typeof refreshActiveSongRows === "function") refreshActiveSongRows();
+      } catch {}
+    }
+    // Throttle-save during playback
+    audio.addEventListener("timeupdate", () => {
+      if (Date.now() - _lastResumeSave > 5000) saveResumePoint();
+    });
+    // Persist on tab close so a hard reload right after pause is captured
+    window.addEventListener("beforeunload", saveResumePoint);
 
     // ── LYRICS (with synced-lyrics support) ──
     let currentLyricsId = null;
@@ -8427,32 +8489,19 @@
       }
     };
 
-    // ── BROWSE CATEGORIES ──
+    // ── BROWSE CATEGORIES (home grid) ──
+    // Trimmed in B1 to ~moods + decades only. Genre/language/artist tiles
+    // (Tamil, Hip-Hop, Anirudh, etc.) live on the dedicated Browse page
+    // (BROWSE_TILES) — having them in both places was redundant noise.
     const BROWSE_CATS = [
-      { label: "Tamil", q: "tamil hits 2025", color: "#E13300" },
-      { label: "Pop", q: "pop hits 2025", color: "#8400E7" },
-      { label: "Hip-Hop", q: "hip hop rap 2025", color: "#BA5D07" },
-      { label: "Bollywood", q: "bollywood hits 2025", color: "#E8115B" },
-      { label: "K-Pop", q: "kpop hits 2025", color: "#148A08" },
       { label: "Romance", q: "love songs romantic", color: "#D84000" },
-      { label: "EDM", q: "edm dance electronic 2025", color: "#0D73EC" },
       { label: "Chill", q: "chill vibes relaxing", color: "#537AA1" },
       { label: "Workout", q: "workout gym motivation", color: "#1E3264" },
-      { label: "R&B", q: "rnb soul songs 2025", color: "#DC148C" },
-      { label: "Rock", q: "top rock songs 2025", color: "#E91429" },
-      { label: "Latin", q: "latin reggaeton 2025", color: "#477D95" },
-      { label: "Arabic", q: "arabic top songs 2025", color: "#509BF5" },
-      { label: "Afrobeats", q: "afrobeats top songs 2025", color: "#A56752" },
-      { label: "Jazz", q: "jazz songs classics", color: "#2D46B9" },
       { label: "Party", q: "party songs 2025", color: "#E1118C" },
       { label: "Sad", q: "sad songs emotional", color: "#608108" },
-      { label: "90s", q: "90s hits songs", color: "#7358FF" },
-      { label: "Anirudh", q: "Anirudh Ravichander songs", color: "#E13300" },
-      { label: "A.R. Rahman", q: "AR Rahman hits", color: "#0D73EC" },
-      { label: "Arijit Singh", q: "arijit singh hits", color: "#8400E7" },
       { label: "Lofi", q: "lofi chill beats", color: "#503750" },
-      { label: "Devotional", q: "devotional songs", color: "#FF6437" },
-      { label: "Classical", q: "classical music carnatic", color: "#2D46B9" }
+      { label: "90s", q: "90s hits songs", color: "#7358FF" },
+      { label: "Devotional", q: "devotional songs", color: "#FF6437" }
     ];
 
     // Year-stale-query auto-bump. JioSaavn ranks freshness, so a hardcoded "2025"
@@ -8724,6 +8773,8 @@
       renderRecentlyPlayed();
       renderSearchHistory();
       renderBrowseCategories();
+      // B7: restore the queue + offset from last session (silent — no autoplay)
+      if (typeof loadResumePoint === "function") loadResumePoint();
 
       // Always try to grab location early so the homepage tunes itself,
       // regardless of whether the user is signed in. Safe to call repeatedly.
