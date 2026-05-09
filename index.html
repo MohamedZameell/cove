@@ -2857,19 +2857,26 @@
   <div class="modal-overlay hidden" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
     <div class="modal">
       <h3 id="authModalTitle">Sign in to Cove</h3>
-      <p>Enter your credentials to access your music library.</p>
+      <p id="authSubtitle">Enter your credentials to access your music library.</p>
+      <div class="modal-field" id="authNameField" style="display:none;">
+        <label class="modal-label" for="nameInput">Name</label>
+        <input id="nameInput" type="text" placeholder="Your name" autocomplete="name">
+      </div>
       <div class="modal-field">
         <label class="modal-label" for="emailInput">Email</label>
         <input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email">
       </div>
       <div class="modal-field">
         <label class="modal-label" for="passwordInput">Password</label>
-        <input id="passwordInput" type="password" placeholder="Enter password" autocomplete="current-password">
+        <input id="passwordInput" type="password" placeholder="At least 6 characters" autocomplete="current-password">
       </div>
       <p id="authMessage" style="font-size:0.82rem;color:var(--error);min-height:1.2em;"></p>
-      <div class="modal-actions">
-        <button class="btn-ghost" id="authCancel">Cancel</button>
-        <button class="btn-primary" id="authSend">Sign in</button>
+      <div class="modal-actions" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <button class="btn-ghost" id="authToggleMode" style="padding:8px 0;background:transparent;text-decoration:underline;font-size:0.85rem;">Create account</button>
+        <div style="display:flex;gap:12px;">
+          <button class="btn-ghost" id="authCancel">Cancel</button>
+          <button class="btn-primary" id="authSend">Sign in</button>
+        </div>
       </div>
     </div>
   </div>
@@ -3012,24 +3019,23 @@
     // Supabase — cloud sync for playlists & favorites across devices
     const SUPABASE_URL = "https://yorbapspeyoxiwtdmtro.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlvcmJhcHNwZXlveGl3dGRtdHJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzE2NjAsImV4cCI6MjA5MTMwNzY2MH0.COPt4l-h3UNNk3JN3NihhIbmBwicBgBp1G8APlnT7Co";
+    // Supabase client — persistSession lets the SDK auto-restore login state from
+    // localStorage so users stay signed in across reloads.
     const sb = (window.supabase && window.supabase.createClient)
-      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } })
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+        })
       : null;
     if (!sb) console.warn("[sync] Supabase SDK failed to load — cross-device sync disabled");
 
-    const USERS = [
-      { email: "zameelraja@gmail.com", hash: "330cef933befbb1c3cd545c99a403efe3ef043391eaefb0869907591352732cd", name: "Zameel" },
-      { email: "fmfaaiz@gmail.com", hash: "b5160b3968069e91319d7842734e4b966d0007f97bbfeb7a26fa4b5653419c74", name: "Faaiz" },
-      { email: "shihan@gmail.com", hash: "8d5b9e2747afc4ea9fbb51060725812e00af805825a20442dc5788b7030324f5", name: "Shihan" }
-    ];
-
-    async function sha256(text) {
-      const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    // Helper: derive a display name from an email when user_metadata.name isn't set.
+    function _nameFromEmail(email) {
+      if (!email) return "User";
+      const local = email.split("@")[0] || "user";
+      return local.charAt(0).toUpperCase() + local.slice(1);
     }
 
     const CACHE_KEY = "isai_cache_v3";
-    const AUTH_KEY = "isai_auth_v1";
     const LOC_KEY = "isai_location_v1";
     const DEAD_KEY = "isai_dead_albums";
     const CACHE_TTL = 3600000;
@@ -3300,14 +3306,26 @@
     }
 
     // ── STORAGE (per-user localStorage) ──
-    function loadAuth() {
-      const saved = safeParse(localStorage.getItem(AUTH_KEY), null);
-      if (saved) { state.user = USERS.find(u => u.email === saved.email) || null; }
+    // Auth is delegated to Supabase Auth — the SDK persists the session in
+    // localStorage under sb-* keys and we mirror the user identity into state.user
+    // so the rest of the app (which reads state.user.email + .name) keeps working.
+    async function loadAuth() {
+      if (!sb) { state.user = null; return; }
+      try {
+        const { data } = await sb.auth.getSession();
+        const session = data?.session;
+        if (session?.user?.email) {
+          state.user = {
+            email: session.user.email,
+            name: session.user.user_metadata?.name || _nameFromEmail(session.user.email),
+            id: session.user.id
+          };
+        } else {
+          state.user = null;
+        }
+      } catch { state.user = null; }
     }
-    function saveAuth() {
-      if (state.user) localStorage.setItem(AUTH_KEY, JSON.stringify({ email: state.user.email }));
-      else localStorage.removeItem(AUTH_KEY);
-    }
+    function saveAuth() { /* no-op — Supabase SDK handles persistence */ }
     function loadFavorites() { state.favorites = safeParse(localStorage.getItem(userKey("favorites")), []); }
     function saveFavorites() { localStorage.setItem(userKey("favorites"), JSON.stringify(state.favorites)); }
     function loadPlaylists() {
@@ -5392,11 +5410,27 @@
     // (no sidebar visible) have a way to sign in.
     $("topbarAuthBtn").onclick = () => dom.authTrigger.click();
 
-    dom.authTrigger.onclick = () => {
+    // Auth UI mode — "signin" or "signup". Toggled via the modal link.
+    let _authMode = "signin";
+    function _setAuthMode(mode) {
+      _authMode = mode;
+      const isSignup = mode === "signup";
+      $("authModalTitle").textContent = isSignup ? "Create account" : "Sign in to Cove";
+      $("authSubtitle").textContent = isSignup
+        ? "Pick an email + password. We'll keep your library synced across devices."
+        : "Enter your credentials to access your music library.";
+      $("authNameField").style.display = isSignup ? "" : "none";
+      $("authSend").textContent = isSignup ? "Create account" : "Sign in";
+      $("authToggleMode").textContent = isSignup ? "I already have an account" : "Create account";
+      $("passwordInput").autocomplete = isSignup ? "new-password" : "current-password";
+      $("authMessage").textContent = "";
+    }
+
+    dom.authTrigger.onclick = async () => {
       if (state.user) {
         if (confirm("Sign out?")) {
+          if (sb) { try { await sb.auth.signOut(); } catch {} }
           state.user = null;
-          saveAuth();
           state.favorites = []; state.playlists = []; state.playlistSongs = []; state.downloads = [];
           updateAuthUI();
           renderSidebarPlaylists();
@@ -5407,43 +5441,95 @@
       } else {
         dom.emailInput.value = "";
         $("passwordInput").value = "";
-        dom.authMessage.textContent = "";
+        $("nameInput").value = "";
+        _setAuthMode("signin");
         openModal(dom.authModal, dom.emailInput);
       }
+    };
+
+    $("authToggleMode").onclick = (e) => {
+      e.preventDefault();
+      _setAuthMode(_authMode === "signin" ? "signup" : "signin");
     };
 
     dom.authSend.onclick = async () => {
       const email = dom.emailInput.value.trim().toLowerCase();
       const password = $("passwordInput").value;
       if (!email || !password) { dom.authMessage.textContent = "Enter email and password"; return; }
-      const hashed = await sha256(password);
-      const found = USERS.find(u => u.email === email && u.hash === hashed);
-      if (!found) {
-        dom.authMessage.textContent = "Invalid email or password";
-        return;
-      }
-      state.user = found;
-      saveAuth();
-      closeModal(dom.authModal);
-      updateAuthUI();
-      loadUserData();
-      toast(`Welcome back, ${found.name}!`);
-      // Surface sync errors on first sign-in so the user knows if cloud is broken.
-      pullFromCloud({ showErrors: true }).then(r => {
-        if (r.ok && (r.plPulled > 0 || r.favPulled > 0)) {
-          setTimeout(() => toast(`Pulled ${r.plPulled} playlists, ${r.favPulled} liked songs from cloud`), 1500);
+      if (!sb) { dom.authMessage.textContent = "Auth is offline — try again in a moment"; return; }
+
+      dom.authSend.disabled = true;
+      dom.authMessage.textContent = "";
+      try {
+        let session, name;
+        if (_authMode === "signup") {
+          const inputName = $("nameInput").value.trim() || _nameFromEmail(email);
+          if (password.length < 6) { dom.authMessage.textContent = "Password must be at least 6 characters"; return; }
+          const { data, error } = await sb.auth.signUp({
+            email, password, options: { data: { name: inputName } }
+          });
+          if (error) { dom.authMessage.textContent = error.message; return; }
+          session = data.session;
+          name = inputName;
+          // If email confirmation is enabled in the project, session is null until verified.
+          if (!session) {
+            dom.authMessage.textContent = "Account created — check your email to verify, then sign in.";
+            _setAuthMode("signin");
+            return;
+          }
+        } else {
+          const { data, error } = await sb.auth.signInWithPassword({ email, password });
+          if (error) { dom.authMessage.textContent = error.message; return; }
+          session = data.session;
+          name = data.user?.user_metadata?.name || _nameFromEmail(email);
         }
-        // G4: kick off onboarding if user has no taste data yet (first sign-in
-        // ever, OR a returning user who's never been through the picker).
-        if (typeof maybeShowOnboarding === "function") setTimeout(maybeShowOnboarding, 600);
-      });
+
+        if (!session?.user) { dom.authMessage.textContent = "Sign-in failed — try again"; return; }
+        state.user = { email: session.user.email, name, id: session.user.id };
+        closeModal(dom.authModal);
+        updateAuthUI();
+        loadUserData();
+        toast(`Welcome${_authMode === "signup" ? "" : " back"}, ${name}!`);
+        // Surface sync errors on first sign-in so the user knows if cloud is broken.
+        pullFromCloud({ showErrors: true }).then(r => {
+          if (r.ok && (r.plPulled > 0 || r.favPulled > 0)) {
+            setTimeout(() => toast(`Pulled ${r.plPulled} playlists, ${r.favPulled} liked songs from cloud`), 1500);
+          }
+          if (typeof maybeShowOnboarding === "function") setTimeout(maybeShowOnboarding, 600);
+        });
+      } finally {
+        dom.authSend.disabled = false;
+      }
     };
 
-    // Allow Enter key in password field
+    // Allow Enter key in password / name fields
     $("passwordInput").addEventListener("keydown", (e) => { if (e.key === "Enter") dom.authSend.click(); });
     dom.emailInput.addEventListener("keydown", (e) => { if (e.key === "Enter") $("passwordInput").focus(); });
+    $("nameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") dom.emailInput.focus(); });
 
     dom.authCancel.onclick = () => closeModal(dom.authModal);
+
+    // Keep state.user in sync if the session expires / refreshes / user signs out
+    // in another tab. The Supabase SDK fires auth-state-change for all of those.
+    if (sb) {
+      sb.auth.onAuthStateChange((event, session) => {
+        if (event === "SIGNED_OUT" || !session?.user) {
+          if (state.user) {
+            state.user = null;
+            updateAuthUI();
+          }
+          return;
+        }
+        if (!state.user || state.user.email !== session.user.email) {
+          state.user = {
+            email: session.user.email,
+            name: session.user.user_metadata?.name || _nameFromEmail(session.user.email),
+            id: session.user.id
+          };
+          updateAuthUI();
+        }
+      });
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // ── ONBOARDING (Phase G4) ──
@@ -8381,7 +8467,7 @@
 
     // ── INIT ──
     (async () => {
-      loadAuth();
+      await loadAuth();
       updateAuthUI();
       updateGreeting();
 
