@@ -1187,6 +1187,63 @@
       justify-content: flex-end;
     }
 
+    /* G4 onboarding — language pills (reuse .chip) and artist tiles */
+    .chip.selected, .chip[aria-pressed="true"] {
+      background: var(--accent);
+      color: var(--bg);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .ob-art-tile {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 10px;
+      transition: background 0.15s, transform 0.15s;
+      position: relative;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .ob-art-img-wrap { position: relative; width: 80px; height: 80px; }
+    .ob-art-tile img {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--bg-elevated);
+      display: block;
+      transition: box-shadow 0.18s, transform 0.18s;
+    }
+    .ob-art-tile.selected img {
+      box-shadow: 0 0 0 3px var(--accent);
+      transform: scale(0.94);
+    }
+    .ob-art-tile.selected .ob-art-img-wrap::after {
+      content: "✓";
+      position: absolute;
+      top: -2px; right: -2px;
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--bg);
+      font-size: 0.75rem;
+      font-weight: 700;
+      display: grid;
+      place-items: center;
+      border: 2px solid var(--bg);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+    }
+    .ob-art-tile .ob-art-name {
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-align: center;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+
     .btn-primary {
       padding: 12px 32px;
       border-radius: var(--radius-full);
@@ -2833,6 +2890,34 @@
       <div class="modal-actions">
         <button class="btn-ghost" id="plCancel">Cancel</button>
         <button class="btn-primary" id="plSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ONBOARDING MODAL (Phase G4) -->
+  <div class="modal-overlay hidden" id="onboardModal" role="dialog" aria-modal="true" aria-labelledby="onboardTitle">
+    <div class="modal" style="max-width:560px;width:100%;">
+      <!-- Step 1: languages -->
+      <div id="onboardStep1">
+        <h3 id="onboardTitle" style="margin:0 0 6px;">Pick your languages</h3>
+        <p style="margin:0 0 16px;color:var(--text-sub);font-size:0.92rem;">Tap the languages you listen to. We'll personalize your home from these.</p>
+        <div id="onboardLangs" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px;"></div>
+        <p id="onboardLangsMsg" style="font-size:0.82rem;color:var(--text-sub);min-height:1.2em;"></p>
+        <div class="modal-actions">
+          <button class="btn-primary" id="onboardLangsNext" disabled>Next</button>
+        </div>
+      </div>
+      <!-- Step 2: artists -->
+      <div id="onboardStep2" class="hidden">
+        <h3 style="margin:0 0 6px;">Pick at least 3 artists you like</h3>
+        <p style="margin:0 0 14px;color:var(--text-sub);font-size:0.92rem;">We'll use these to seed your homepage. You can always change this later.</p>
+        <div id="onboardArtistsCount" style="font-size:0.82rem;color:var(--text-sub);margin-bottom:10px;">0 / 3 selected</div>
+        <div id="onboardArtists" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:12px;max-height:60vh;overflow-y:auto;padding:4px 4px 8px;"></div>
+        <p id="onboardArtistsMsg" style="font-size:0.82rem;color:var(--text-sub);min-height:1.2em;margin-top:10px;"></p>
+        <div class="modal-actions">
+          <button class="btn-ghost" id="onboardBack">Back</button>
+          <button class="btn-primary" id="onboardDone" disabled>Done</button>
+        </div>
       </div>
     </div>
   </div>
@@ -5331,6 +5416,9 @@
         if (r.ok && (r.plPulled > 0 || r.favPulled > 0)) {
           setTimeout(() => toast(`Pulled ${r.plPulled} playlists, ${r.favPulled} liked songs from cloud`), 1500);
         }
+        // G4: kick off onboarding if user has no taste data yet (first sign-in
+        // ever, OR a returning user who's never been through the picker).
+        if (typeof maybeShowOnboarding === "function") setTimeout(maybeShowOnboarding, 600);
       });
     };
 
@@ -5339,6 +5427,179 @@
     dom.emailInput.addEventListener("keydown", (e) => { if (e.key === "Enter") $("passwordInput").focus(); });
 
     dom.authCancel.onclick = () => closeModal(dom.authModal);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ── ONBOARDING (Phase G4) ──
+    // Two-step modal: language multi-select → artist picker (>=3 required).
+    // Triggered on first sign-in for users who have no taste profile yet.
+    // Pattern follows Spotify: enforced minimum (3 artists) before Done enables.
+    // ══════════════════════════════════════════════════════════════════════════
+    const ONBOARD_LANGS = [
+      { key: "tamil", label: "Tamil" }, { key: "hindi", label: "Hindi" },
+      { key: "english", label: "English" }, { key: "malayalam", label: "Malayalam" },
+      { key: "telugu", label: "Telugu" }, { key: "kannada", label: "Kannada" },
+      { key: "punjabi", label: "Punjabi" }, { key: "marathi", label: "Marathi" },
+      { key: "bengali", label: "Bengali" }, { key: "gujarati", label: "Gujarati" },
+      { key: "urdu", label: "Urdu" }, { key: "spanish", label: "Spanish" },
+      { key: "korean", label: "Korean" }
+    ];
+
+    function onboardKey() { return userKey("onboarded"); }
+    function isOnboarded() { return localStorage.getItem(onboardKey()) === "1"; }
+    function markOnboarded() { try { localStorage.setItem(onboardKey(), "1"); } catch {} }
+
+    // Show onboarding when: signed in, never onboarded, AND no listening history yet
+    // (so existing users with plays don't get nagged unless they're truly fresh).
+    function maybeShowOnboarding() {
+      if (!state.user) return;
+      if (isOnboarded()) return;
+      const t = (typeof loadTaste === "function") ? loadTaste() : null;
+      if (t && (t.plays || 0) > 0) { markOnboarded(); return; }
+      showOnboarding();
+    }
+
+    function showOnboarding() {
+      const modal = $("onboardModal");
+      if (!modal) return;
+      const step1 = $("onboardStep1");
+      const step2 = $("onboardStep2");
+      const langWrap = $("onboardLangs");
+      const artWrap = $("onboardArtists");
+      const langsMsg = $("onboardLangsMsg");
+      const artMsg = $("onboardArtistsMsg");
+      const nextBtn = $("onboardLangsNext");
+      const backBtn = $("onboardBack");
+      const doneBtn = $("onboardDone");
+      const countEl = $("onboardArtistsCount");
+
+      const pickedLangs = new Set((state.userLangs || []).filter(Boolean));
+      const pickedArtists = new Map(); // id -> {id, name, image, role, followers}
+
+      // Step 1: render language chips, pre-selecting any already-known langs.
+      step1.classList.remove("hidden");
+      step2.classList.add("hidden");
+      langWrap.innerHTML = "";
+      ONBOARD_LANGS.forEach(({ key, label }) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chip" + (pickedLangs.has(key) ? " selected" : "");
+        btn.setAttribute("aria-pressed", pickedLangs.has(key) ? "true" : "false");
+        btn.textContent = label;
+        btn.onclick = () => {
+          if (pickedLangs.has(key)) pickedLangs.delete(key); else pickedLangs.add(key);
+          btn.classList.toggle("selected");
+          btn.setAttribute("aria-pressed", pickedLangs.has(key) ? "true" : "false");
+          nextBtn.disabled = pickedLangs.size < 1;
+          langsMsg.textContent = pickedLangs.size < 1 ? "Pick at least one language" : "";
+        };
+        langWrap.appendChild(btn);
+      });
+      nextBtn.disabled = pickedLangs.size < 1;
+      langsMsg.textContent = "";
+
+      nextBtn.onclick = async () => {
+        if (pickedLangs.size < 1) return;
+        // Save langs immediately so the artist fetch can use them.
+        state.userLangs = Array.from(pickedLangs);
+        try {
+          localStorage.setItem(LOC_KEY, JSON.stringify({
+            ...(safeParse(localStorage.getItem(LOC_KEY), {}) || {}),
+            langs: state.userLangs, ts: Date.now()
+          }));
+        } catch {}
+        // Move to step 2 — fetch artist grid
+        step1.classList.add("hidden");
+        step2.classList.remove("hidden");
+        artWrap.innerHTML = "";
+        countEl.textContent = "0 / 3 selected";
+        doneBtn.disabled = true;
+        artWrap.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-sub);padding:24px;">Loading artists…</div>';
+
+        // Use the cached /modules payload if home already loaded; otherwise fetch fresh.
+        let modules = state._modulesData;
+        if (!modules) {
+          try { modules = await fetchHomeModules(); state._modulesData = modules; } catch {}
+        }
+        // Synthesize artist tiles from new_albums credits across selected langs.
+        const seen = new Map();
+        for (const raw of (modules?.new_albums || [])) {
+          const lang = (raw.language || "").toLowerCase();
+          if (state.userLangs.length && !state.userLangs.includes(lang)) continue;
+          const credited = raw?.more_info?.artistMap?.artists || [];
+          for (const a of credited) {
+            if (!a?.id || !a?.name || !a?.image) continue;
+            const role = (a.role || "").toLowerCase();
+            if (role && role !== "singer" && role !== "primary_artist") continue;
+            if (seen.has(a.id)) continue;
+            seen.set(a.id, {
+              id: a.id, name: decode(a.name), image: a.image,
+              role: a.role || "Artist", followers: 0
+            });
+            if (seen.size >= 24) break;
+          }
+          if (seen.size >= 24) break;
+        }
+
+        artWrap.innerHTML = "";
+        if (!seen.size) {
+          artWrap.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-sub);padding:24px;">Couldn\'t load artists right now. You can skip and pick later.</div>';
+          doneBtn.disabled = false;
+          doneBtn.textContent = "Skip";
+          return;
+        }
+
+        for (const a of seen.values()) {
+          const tile = document.createElement("div");
+          tile.className = "ob-art-tile";
+          tile.setAttribute("role", "button");
+          tile.tabIndex = 0;
+          tile.setAttribute("aria-pressed", "false");
+          tile.innerHTML = `
+            <div class="ob-art-img-wrap"><img src="${escapeAttr(a.image)}" alt="" loading="lazy"></div>
+            <div class="ob-art-name">${escapeHtml(a.name)}</div>
+          `;
+          const toggle = () => {
+            if (pickedArtists.has(a.id)) pickedArtists.delete(a.id);
+            else pickedArtists.set(a.id, a);
+            tile.classList.toggle("selected", pickedArtists.has(a.id));
+            tile.setAttribute("aria-pressed", pickedArtists.has(a.id) ? "true" : "false");
+            countEl.textContent = `${pickedArtists.size} / 3 selected`;
+            doneBtn.disabled = pickedArtists.size < 3;
+            artMsg.textContent = pickedArtists.size < 3 ? `Pick ${3 - pickedArtists.size} more` : "";
+          };
+          tile.onclick = toggle;
+          tile.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
+          artWrap.appendChild(tile);
+        }
+      };
+
+      backBtn.onclick = () => {
+        step2.classList.add("hidden");
+        step1.classList.remove("hidden");
+      };
+
+      doneBtn.onclick = () => {
+        // Persist seed artists — they double as state.followedArtists so they
+        // immediately seed the "From Your Library" home row + cloud sync.
+        for (const a of pickedArtists.values()) {
+          if (typeof followArtist === "function" && !isArtistFollowed(a.id)) {
+            followArtist(a);
+          }
+        }
+        markOnboarded();
+        closeModal(modal);
+        toast(`Welcome aboard! Picked ${pickedArtists.size} artist${pickedArtists.size === 1 ? "" : "s"}.`);
+        // Refresh home so personalization kicks in immediately
+        if (typeof loadInitial === "function") loadInitial(true);
+      };
+
+      openModal(modal, nextBtn);
+    }
+
+    // Trigger onboarding for already-signed-in users on app start (in case
+    // they signed in before onboarding existed). Run AFTER taste profile is
+    // loaded so the "has plays" check works.
+    setTimeout(() => { try { maybeShowOnboarding(); } catch {} }, 800);
 
     // ── SEARCH ──
     function renderSearchAlbumCard(album) {
