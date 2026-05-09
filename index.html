@@ -4690,6 +4690,15 @@
       // Extract color for dynamic bg
       extractColor(song.image);
 
+      // G6: detect repeat-within-24h BEFORE bumping play count — strong positive
+      // signal (+8) since user actively re-played a track.
+      try {
+        const prevCounts = getPlayCounts();
+        const prev = prevCounts[song.id];
+        if (prev?.last && (Date.now() - prev.last) < 86_400_000) {
+          recordTaste("repeat", song);
+        }
+      } catch {}
       // Track recently played + bump play count for "On Repeat"
       addToRecentlyPlayed(song);
       incrementPlayCount(song);
@@ -4733,6 +4742,14 @@
 
     async function skipNext(force = false) {
       if (!state.currentQueue.length) return;
+      // G6: detect early skip — track played <30s and not naturally ended.
+      // Soft negative signal (-2.5) so the artist/lang sinks slightly. Floored at 0.
+      try {
+        if (!audio.ended && audio.currentTime > 0 && audio.currentTime < 30) {
+          const cur = currentSong();
+          if (cur && typeof recordTaste === "function") recordTaste("skip", cur);
+        }
+      } catch {}
       if (!force && state.repeatMode === "one") { audio.currentTime = 0; audio.play(); return; }
       let next = state.currentIndex + 1;
       if (next >= state.currentQueue.length) {
