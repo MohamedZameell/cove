@@ -3630,8 +3630,9 @@
       while (dom.toast.children.length > 4) dom.toast.firstElementChild.remove();
       const dur = type === "error" ? 4500 : 2500;
       setTimeout(() => {
+        if (!item.parentNode) return; // already culled by the cap-at-4 logic
         item.classList.remove("show");
-        setTimeout(() => item.remove(), 280);
+        setTimeout(() => { if (item.parentNode) item.remove(); }, 280);
       }, dur);
     }
 
@@ -6314,6 +6315,7 @@
 
       // Playback
       const qSel = $("settingsQuality");
+      if (!qSel) { console.warn("[settings] missing #settingsQuality"); return; }
       qSel.value = getAudioQualityPref();
       qSel.onchange = () => {
         try { localStorage.setItem(PREF.audioQuality, qSel.value); } catch {}
@@ -6368,6 +6370,10 @@
           localStorage.removeItem(CACHE_KEY);
           localStorage.removeItem(DEAD_KEY);
         } catch {}
+        // Drop the in-memory module snapshot too — otherwise the next render
+        // would still use the stale data even though localStorage is clean.
+        state._modulesData = null;
+        state._renderedPlaylistIds = new Set();
         toast("Cache cleared");
         if (typeof loadInitial === "function") loadInitial(true);
       };
@@ -6394,6 +6400,8 @@
       ];
       const sel = new Set((state.userLangs || []).filter(Boolean));
       langWrap.innerHTML = "";
+      // Debounce home refresh so rapid multi-toggle doesn't fire 5 fetches.
+      let _langRefreshT = null;
       ALL_LANGS.forEach(({ key, label }) => {
         const btn = document.createElement("button");
         btn.type = "button";
@@ -6411,6 +6419,11 @@
             cached.ts = Date.now();
             localStorage.setItem(LOC_KEY, JSON.stringify(cached));
           } catch {}
+          // Refresh home so the change actually shows up — debounce ~600ms.
+          clearTimeout(_langRefreshT);
+          _langRefreshT = setTimeout(() => {
+            if (typeof loadInitial === "function") loadInitial(true);
+          }, 600);
         };
         langWrap.appendChild(btn);
       });
@@ -7403,6 +7416,9 @@
           apiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=12`).catch(() => null)
         )
       );
+      // Bail if the user navigated away during the await — no point building
+      // DOM for a page they're not on.
+      if (state.currentPage && state.currentPage !== "home") return;
       _featuredFetches.forEach(r => {
         const results = r?.data?.results || [];
         let added = 0;
@@ -7706,9 +7722,19 @@
         if (curator.includes("saavn") || curator.includes("jio")) return followers >= 100;
         return followers >= 1000;
       };
-      for (const lang of langs) {
+      // Fire all language fetches in parallel — sequential await chained one-per-
+      // language was 2× slower for bilingual users.
+      const _langResponses = await Promise.all(
+        langs.map(lang =>
+          apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=20`).catch(() => null)
+        )
+      );
+      // Bail if the user navigated away during the await
+      if (state.currentPage && state.currentPage !== "home") return;
+      for (let li = 0; li < langs.length; li++) {
+        const lang = langs[li];
+        const r = _langResponses[li];
         const niceLang = langTitle[lang] || lang.replace(/^./, c => c.toUpperCase());
-        const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=20`).catch(() => null);
         const raw = r?.data?.results || [];
         // Apply strict filter first; if too few survive, relax to >=100 followers
         let kept = raw.filter(passesQuality);
