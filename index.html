@@ -2010,6 +2010,35 @@
       color: var(--text-sub);
       text-align: center;
     }
+    /* Inline remove × on Library cards (artists / saved playlists) — appears
+       on hover (desktop) or always on touch devices. */
+    .lib-remove-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(0,0,0,0.7);
+      color: var(--text);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      opacity: 0;
+      transform: scale(0.85);
+      transition: opacity 0.15s, transform 0.15s, background 0.15s;
+      z-index: 2;
+    }
+    .lib-remove-btn:hover, .lib-remove-btn:focus-visible { background: var(--accent); }
+    .lib-remove-btn svg { width: 14px; height: 14px; fill: currentColor; }
+    .lib-artist-card:hover .lib-remove-btn,
+    .lib-artist-card:focus-within .lib-remove-btn,
+    .playlist-card:hover .lib-remove-btn,
+    .playlist-card:focus-within .lib-remove-btn { opacity: 1; transform: scale(1); }
+    @media (hover: none), (pointer: coarse) {
+      .lib-remove-btn { opacity: 1; transform: scale(1); }
+    }
 
     /* ── BROWSE TILES (Phase E) ── */
     .browse-tiles {
@@ -3242,10 +3271,19 @@
         return result;
       } catch (err) {
         const msg = err?.message || String(err);
+        const transient = /failed to fetch|networkerror|network request failed|load failed/i.test(msg);
+        // Retry once for transient network blips (fixes the spurious "Sync failed: TypeError: Failed to fetch" toast)
+        if (transient && !opts._retried) {
+          await new Promise(r => setTimeout(r, 1500));
+          return pullFromCloud({ ...opts, _retried: true });
+        }
         console.warn("[sync] pull failed:", msg, err);
         result.ok = false;
         result.error = msg;
-        if (opts.showErrors) toast(`Sync failed: ${msg}`, "error");
+        result.transient = transient;
+        // Suppress toast for transient network errors even if showErrors is set —
+        // the user is offline or had a blip; the local cache is fine.
+        if (opts.showErrors && !transient) toast(`Sync failed: ${msg}`, "error");
         return result;
       }
     }
@@ -5507,11 +5545,22 @@
           ? `${Number(a.followers).toLocaleString()} followers`
           : (a.role || "Artist");
         card.innerHTML = `
+          <button class="lib-remove-btn" type="button" aria-label="Unfollow ${escapeAttr(a.name)}"><svg><use href="#ico-close"/></svg></button>
           <div class="lac-art">${a.image ? `<img src="${escapeAttr(a.image)}" alt="" loading="lazy">` : ""}</div>
           <div class="lac-name">${escapeHtml(a.name)}</div>
           <div class="lac-sub">${escapeHtml(sub)}</div>
         `;
-        card.onclick = () => fetchAndShowArtist(a.id, a.name, a.image);
+        card.onclick = (e) => {
+          if (e.target.closest(".lib-remove-btn")) return;
+          fetchAndShowArtist(a.id, a.name, a.image);
+        };
+        const rm = card.querySelector(".lib-remove-btn");
+        rm.onclick = (e) => {
+          e.stopPropagation();
+          unfollowArtist(a.id);
+          renderLibraryArtists();
+          toast(`Unfollowed ${a.name}`);
+        };
         grid.appendChild(card);
       });
     }
@@ -5526,17 +5575,32 @@
       section.classList.remove("hidden");
       grid.innerHTML = "";
       list.forEach(pl => {
-        const card = document.createElement("button");
+        // role=button div instead of <button> so we can nest the inline remove × button inside.
+        const card = document.createElement("div");
         card.className = "playlist-card";
-        card.style.cssText = "background:var(--bg-elevated);border:none;border-radius:8px;padding:12px;cursor:pointer;text-align:left;color:inherit;transition:background 0.2s;";
+        card.setAttribute("role", "button");
+        card.tabIndex = 0;
+        card.setAttribute("aria-label", `Open ${pl.title}`);
+        card.style.cssText = "position:relative;background:var(--bg-elevated);border-radius:8px;padding:12px;cursor:pointer;text-align:left;color:inherit;transition:background 0.2s;";
         card.innerHTML = `
+          <button class="lib-remove-btn" type="button" aria-label="Unsave ${escapeAttr(pl.title)}"><svg><use href="#ico-close"/></svg></button>
           <div style="width:100%;aspect-ratio:1;border-radius:6px;overflow:hidden;background:var(--bg-base);margin-bottom:10px;">
             ${pl.image ? `<img src="${escapeAttr(pl.image)}" alt="" style="width:100%;height:100%;object-fit:cover">` : ""}
           </div>
           <div style="font-weight:600;font-size:0.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(pl.title)}</div>
           <div style="font-size:0.75rem;color:var(--text-sub);margin-top:2px;">${escapeHtml(pl.subtitle || "Saved")}</div>
         `;
-        card.onclick = () => fetchAndPlayPlaylist(pl.id);
+        card.onclick = (e) => {
+          if (e.target.closest(".lib-remove-btn")) return;
+          fetchAndPlayPlaylist(pl.id);
+        };
+        const rm = card.querySelector(".lib-remove-btn");
+        rm.onclick = (e) => {
+          e.stopPropagation();
+          unsavePlaylistRef(pl.id);
+          renderLibrarySavedPlaylists();
+          toast(`Removed ${pl.title}`);
+        };
         grid.appendChild(card);
       });
     }
@@ -6147,12 +6211,17 @@
       // "Endrendrum 2000s") arrive under tag_mixes / editorial. The keys can
       // shift per region so we accept any list-shaped module that hasn't been
       // consumed elsewhere and the items have id+image+title.
+      // Track every playlist id we've already shown so the same tile doesn't
+      // appear in two editorial rows (tag_mixes vs editorial vs top_playlists, etc.).
+      const usedPlaylistIds = new Set();
       const editorialKeys = ["tag_mixes", "editorial", "top_playlists", "promoted", "discover"];
       for (const key of editorialKeys) {
         const raw = data[key];
         if (!Array.isArray(raw)) continue;
-        const items = raw.map(normalizeModulePlaylist).filter(p => p.id && p.image && p.title);
+        const items = raw.map(normalizeModulePlaylist)
+          .filter(p => p.id && p.image && p.title && !usedPlaylistIds.has(p.id));
         if (items.length < 4) continue;
+        items.slice(0, 12).forEach(p => usedPlaylistIds.add(p.id));
         const niceTitle = decode(data[key + "_title"] || (
           key === "tag_mixes" ? "Made For Your Moods" :
           key === "editorial" ? "Editor's Picks" :
@@ -6170,10 +6239,14 @@
       }
 
       // JioSaavn editorial picks — featured playlists, mixed languages.
-      if (playlists.length) {
-        sections.push({ title: "Featured on JioSaavn", items: playlists.slice(0, 12) });
-        if (playlists.length > 12) {
-          sections.push({ title: "More for You", items: playlists.slice(12, 24) });
+      // Filtered against usedPlaylistIds so we don't repeat editorial tiles here.
+      const remainingPlaylists = playlists.filter(p => !usedPlaylistIds.has(p.id));
+      if (remainingPlaylists.length) {
+        sections.push({ title: "Featured on JioSaavn", items: remainingPlaylists.slice(0, 12) });
+        remainingPlaylists.slice(0, 12).forEach(p => usedPlaylistIds.add(p.id));
+        if (remainingPlaylists.length > 12) {
+          sections.push({ title: "More for You", items: remainingPlaylists.slice(12, 24) });
+          remainingPlaylists.slice(12, 24).forEach(p => usedPlaylistIds.add(p.id));
         }
       }
 
@@ -6371,10 +6444,24 @@
       grid.dataset.rendered = "1";
     }
 
-    function renderChartsPage() {
+    async function renderChartsPage() {
       const grid = $("chartsGrid");
       const empty = $("chartsEmpty");
       if (!grid) return;
+      // Cold-start: if user landed on /charts without visiting Home first,
+      // fetch the modules payload on demand so the page isn't blank.
+      if (!state._modulesData && !state._chartsFetching) {
+        state._chartsFetching = true;
+        grid.innerHTML = '<div class="skeleton-card"></div>'.repeat(8);
+        if (empty) empty.classList.add("hidden");
+        try {
+          state._modulesData = await fetchHomeModules();
+        } catch (err) {
+          console.warn("Charts cold-fetch failed:", err?.message || err);
+        } finally {
+          state._chartsFetching = false;
+        }
+      }
       const data = state._modulesData;
       const charts = (data?.charts || []).map(normalizeModulePlaylist).filter(c => c.id && c.image);
       if (!charts.length) {
@@ -6810,6 +6897,13 @@
 
       if (items.length < 4) { section.classList.add("hidden"); return; }
       section.classList.remove("hidden");
+
+      // Skip re-render if nothing changed since last call. Stops the cold-start
+      // flicker where loadInitial calls us first, then loadHomeFromModules calls
+      // us again 200-400ms later with the same items.
+      const sig = items.slice(0, 8).map(i => `${i.kind}:${i.id}`).join("|");
+      if (grid.dataset.sig === sig && grid.children.length) return;
+      grid.dataset.sig = sig;
       grid.innerHTML = "";
 
       const kindLabel = { mix: "Mix", album: "Album" };
@@ -7594,7 +7688,13 @@
         banner.classList.remove("visible");
       }
     }
-    window.addEventListener("online", () => { updateOfflineBanner(); toast("Back online"); });
+    window.addEventListener("online", () => {
+      updateOfflineBanner();
+      toast("Back online");
+      // Silently re-pull cloud data on reconnect so a transient offline blip
+      // doesn't leave the device out of sync until next reload.
+      if (state.user && typeof pullFromCloud === "function") pullFromCloud({ showErrors: false });
+    });
     window.addEventListener("offline", updateOfflineBanner);
     $("offlineRetryBtn").onclick = async () => {
       try {
@@ -7621,8 +7721,10 @@
         loadUserData();
         loadSharedData();
         renderSidebarPlaylists();
-        // Pull cloud data on app start (fire-and-forget; surfaces errors via toast)
-        pullFromCloud({ showErrors: true });
+        // Pull cloud data on app start (fire-and-forget). Boot pulls are SILENT —
+        // local cache is authoritative; transient network blips are not user-actionable.
+        // Errors are still logged to console.
+        pullFromCloud({ showErrors: false });
       } else {
         renderFavorites();
         renderDownloads();
