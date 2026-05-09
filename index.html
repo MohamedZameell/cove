@@ -7013,6 +7013,10 @@
         sections.push({ key: "worldwide_charts", title: "More Charts", items: leftoverCharts.slice(0, 12) });
       }
 
+      // Expose used playlist + chart IDs so the later-rendered "Top {lang} Hits"
+      // row can dedupe against them and we don't show the same tile twice.
+      state._renderedPlaylistIds = new Set([...usedPlaylistIds, ...usedChartIds]);
+
       if (!sections.length) throw new Error("modules: nothing to render");
 
       // ── G3: UCB1 module bandit ──
@@ -7132,13 +7136,59 @@
         return null;
       };
 
+      // Quality filter for /search/playlists results — strips user-uploaded
+      // junk that pollutes the row (names like "tamil_hits_2023", "best!!!",
+      // etc.) and keeps editorial playlists. JioSaavn editorial playlists have
+      // 5-figure+ follower counts; user playlists have ~0. We also reject
+      // titles that are clearly not curated (all-lower-with-digits, repeating
+      // punctuation, ALL CAPS shouting, sub-3-char garbage).
+      const looksJunk = (title) => {
+        const t = (title || "").trim();
+        if (!t || t.length < 4) return true;
+        if (/[!?]{2,}/.test(t)) return true;                     // "best!!" / "wow??"
+        if (/^[a-z][a-z0-9_\-\s]{2,}$/.test(t) && /\d/.test(t)) return true; // "tamil_hits_2023"
+        if (/^[A-Z0-9 !?.\-]+$/.test(t) && t.length > 10) return true; // "BEST OF BEST"
+        // Reject titles where less than 40% of chars are letters.
+        // Unicode-aware so Tamil/Hindi script titles are not false-flagged.
+        let letters = 0;
+        try { const m = t.match(/\p{L}/gu); letters = m ? m.length : 0; }
+        catch { letters = t.replace(/[^a-zA-Z]/g, '').length; }
+        if (letters / t.length < 0.4) return true;
+        return false;
+      };
+      const passesQuality = (raw) => {
+        const followers = Number(raw.more_info?.follower_count || 0);
+        const curator = (raw.more_info?.firstname || "").toLowerCase();
+        const titleStr = decode(raw.title || raw.name || "");
+        if (looksJunk(titleStr)) return false;
+        // JioSaavn-curated rows pass even at lower follower counts
+        if (curator.includes("saavn") || curator.includes("jio")) return followers >= 100;
+        return followers >= 1000;
+      };
       for (const lang of langs) {
         const niceLang = langTitle[lang] || lang.replace(/^./, c => c.toUpperCase());
-        const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=12`).catch(() => null);
-        const items = (r?.data?.results || [])
-          .map(p => normalizeModulePlaylist(p))
-          .filter(p => p.id && p.image && p.title);
+        const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=20`).catch(() => null);
+        const raw = r?.data?.results || [];
+        // Apply strict filter first; if too few survive, relax to >=100 followers
+        let kept = raw.filter(passesQuality);
+        if (kept.length < 4) {
+          kept = raw.filter(p => {
+            const f = Number(p.more_info?.follower_count || 0);
+            return f >= 100 && !looksJunk(decode(p.title || p.name || ""));
+          });
+        }
+        // Sort by follower count desc — most popular curated picks first
+        kept.sort((a, b) =>
+          Number(b.more_info?.follower_count || 0) - Number(a.more_info?.follower_count || 0)
+        );
+        // Dedupe against already-rendered editorial / featured / charts tiles
+        // so the same playlist doesn't appear twice on the home page.
+        const usedIds = state._renderedPlaylistIds || new Set();
+        const items = kept.map(p => normalizeModulePlaylist(p))
+          .filter(p => p.id && p.image && p.title && !usedIds.has(p.id));
         if (items.length < 4) continue;
+        items.forEach(p => usedIds.add(p.id));
+        state._renderedPlaylistIds = usedIds;
         const sectionEl = document.createElement("div");
         sectionEl.className = "home-section";
         sectionEl.dataset.sectionKey = `lang-trending-${lang}`;
