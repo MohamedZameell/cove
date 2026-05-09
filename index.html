@@ -6306,7 +6306,28 @@
         gujarati: "Gujarati", urdu: "Urdu", spanish: "Spanish", korean: "Korean"
       };
 
-      for (const lang of userLangs) {
+      // ── G2: Adaptive language ordering ──
+      // Once the user has played ≥10 songs, order language sections by listening
+      // share (langScores) instead of the static userLangs setting. Hindi sinks
+      // below editorial picks once Tamil dominates, etc. Below the threshold we
+      // fall back to userLangs so cold start doesn't feel random.
+      const _profile = (typeof getTasteProfile === "function") ? getTasteProfile() : { isRich: false, langScores: {} };
+      let orderedLangs;
+      if (_profile.isRich) {
+        const scored = userLangs.slice().sort((a, b) =>
+          (_profile.langScores[b] || 0) - (_profile.langScores[a] || 0)
+        );
+        // Drop any language whose share is below 15% of the dominant one — those
+        // get demoted to "Worldwide" leftover at the bottom rather than hogging top rows.
+        const top = _profile.langScores[scored[0]] || 0;
+        orderedLangs = top > 0
+          ? scored.filter((l, i) => i === 0 || (_profile.langScores[l] || 0) >= top * 0.15)
+          : scored;
+      } else {
+        orderedLangs = userLangs;
+      }
+
+      for (const lang of orderedLangs) {
         const albumsForLang = newAlbums.filter(a => a.language === lang && !usedAlbumIds.has(a.id));
         if (albumsForLang.length) {
           albumsForLang.forEach(a => usedAlbumIds.add(a.id));
@@ -6422,43 +6443,54 @@
       // From Your Library — followed artists as circular avatars at the top of
       // homeSections. Renders last so it ends up above Made For You.
       renderFollowedArtistsRow();
-      // City-aware editorial row ("What's Hot in <City>") via /search/playlists.
-      renderCityRow().catch(() => {});
+      // G2: Replaced "What's Hot in {City}" with "Top {dominantLang} Hits".
+      // Cities like "Thiruporur" returned junk; language-keyed search is curated.
+      renderLangTrendingRow().catch(() => {});
       // Trending podcasts row — best-effort, hidden if JioSaavn returns nothing.
       renderPodcastsRow().catch(() => {});
     }
 
-    // "What's Hot in {City}" — Phase E. Best-effort: skips if no city resolved
-    // or if the search returns fewer than 4 valid playlists.
-    async function renderCityRow() {
-      const city = state.userCity;
-      if (!city) return;
+    // G2: "Top {dominantLang} Hits" — replaces the old "What's Hot in {City}" row.
+    // Uses the user's dominant listening language when available, else userLangs[0].
+    // Skips silently if no language resolved or fewer than 4 valid playlists return.
+    async function renderLangTrendingRow() {
       const container = $("homeSections");
       if (!container) return;
-      const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(city + " hits")}&limit=12`).catch(() => null);
+      const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
+      const dom = profile?.dominantLangs?.[0]?.lang;
+      const lang = dom || (state.userLangs && state.userLangs[0]) || null;
+      if (!lang) return;
+      const langTitle = {
+        tamil: "Tamil", hindi: "Hindi", english: "English", malayalam: "Malayalam",
+        telugu: "Telugu", kannada: "Kannada", punjabi: "Punjabi", marathi: "Marathi",
+        bengali: "Bengali", gujarati: "Gujarati", urdu: "Urdu", spanish: "Spanish",
+        korean: "Korean"
+      };
+      const niceLang = langTitle[lang] || lang.replace(/^./, c => c.toUpperCase());
+      const r = await apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=12`).catch(() => null);
       const items = (r?.data?.results || [])
         .map(p => normalizeModulePlaylist(p))
         .filter(p => p.id && p.image && p.title);
       if (items.length < 4) return;
-      const existing = container.querySelector('[data-section-key="city-row"]');
+      const existing = container.querySelector('[data-section-key="lang-trending"]');
       if (existing) existing.remove();
       const sectionEl = document.createElement("div");
       sectionEl.className = "home-section";
-      sectionEl.dataset.sectionKey = "city-row";
+      sectionEl.dataset.sectionKey = "lang-trending";
       sectionEl.style.marginBottom = "36px";
-      sectionEl.innerHTML = `<div class="section-header"><h3>What's Hot in ${escapeHtml(city)}</h3></div>`;
+      sectionEl.innerHTML = `<div class="section-header"><h3>Top ${escapeHtml(niceLang)} Hits</h3></div>`;
       const grid = document.createElement("div");
       grid.className = "card-grid";
       items.slice(0, 12).forEach(p => grid.appendChild(renderHomeCard(p)));
       sectionEl.appendChild(grid);
-      // Insert near the top — above editorial picks but below personal rows.
+      // Insert just below the personal rows (more-like / daily-mix / followed-artists)
+      // and above generic editorial picks.
       const beforeKey = ['[data-section-key="more-like"]', '[data-section-key="daily-mix"]', '[data-section-key="followed-artists"]'];
       let anchor = null;
       for (const sel of beforeKey) {
         const m = container.querySelector(sel);
         if (m) { anchor = m; break; }
       }
-      // City row sits AFTER the personal rows but before generic editorial.
       if (anchor && anchor.nextSibling) container.insertBefore(sectionEl, anchor.nextSibling);
       else if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
       else container.appendChild(sectionEl);
