@@ -1331,28 +1331,48 @@
     .mobile-nav-btn svg { width: 24px; height: 24px; fill: currentColor; }
 
     /* ── TOAST ── */
+    /* B4: toast stack — toasts queue vertically instead of replacing.
+       The legacy #toast element is repurposed as the stack container. */
     .toast {
       position: fixed;
       bottom: calc(var(--player-h) + 16px);
       left: 50%;
-      transform: translateX(-50%) translateY(100px);
-      background: rgba(34,32,42,0.9);
+      transform: translateX(-50%);
+      z-index: 300;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 8px;
+      align-items: center;
+      max-width: calc(100% - 32px);
+    }
+    .toast-item {
+      background: rgba(34,32,42,0.92);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
       color: var(--text);
-      padding: 10px 24px;
+      padding: 10px 22px;
       border-radius: var(--radius-full);
       font-size: 0.88rem;
       font-weight: 600;
       box-shadow: 0 4px 16px rgba(0,0,0,0.4), 0 0 0 1px var(--divider);
-      z-index: 300;
       opacity: 0;
-      transition: opacity 0.3s, transform 0.3s;
-      pointer-events: none;
+      transform: translateY(20px) scale(0.96);
+      transition: opacity 0.25s, transform 0.25s;
+      pointer-events: auto;
+      max-width: 100%;
+      text-align: center;
     }
+    .toast-item.show { opacity: 1; transform: translateY(0) scale(1); }
+    .toast-item.error { background: #b3261e; color: #fff; }
 
-    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-    .toast.error { background: #b3261e; color: #fff; }
+    /* C2: respect prefers-reduced-motion across decorative animations */
+    @media (prefers-reduced-motion: reduce) {
+      .home-section { animation: none !important; opacity: 1 !important; transform: none !important; }
+      .page { animation: none !important; }
+      .toast-item { transition-duration: 0.001ms !important; }
+      * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+    }
 
     /* ══════ RESPONSIVE ══════ */
 
@@ -1573,7 +1593,8 @@
 
       .mobile-nav-btn {
         padding: 6px 16px;
-        font-size: 0.6rem;
+        /* E1: bumped from 0.6rem (9.6px, below Apple HIG 12px minimum) to 0.72rem (~11.5px) */
+        font-size: 0.72rem;
         gap: 3px;
         -webkit-tap-highlight-color: transparent;
       }
@@ -3293,11 +3314,23 @@
       finally { ta.remove(); }
     }
 
+    // B4: stack toasts — each call appends a new toast that auto-dismisses
+    // independently. Cap at 4 visible to avoid runaway stacks.
     function toast(msg, type) {
-      dom.toast.textContent = msg;
-      dom.toast.classList.toggle("error", type === "error");
-      dom.toast.classList.add("show");
-      setTimeout(() => dom.toast.classList.remove("show"), type === "error" ? 4500 : 2500);
+      if (!dom.toast) return;
+      const item = document.createElement("div");
+      item.className = "toast-item" + (type === "error" ? " error" : "");
+      item.textContent = msg;
+      dom.toast.appendChild(item);
+      // Animate in next frame so the transition fires
+      requestAnimationFrame(() => item.classList.add("show"));
+      // Cap stack — drop oldest if over 4
+      while (dom.toast.children.length > 4) dom.toast.firstElementChild.remove();
+      const dur = type === "error" ? 4500 : 2500;
+      setTimeout(() => {
+        item.classList.remove("show");
+        setTimeout(() => item.remove(), 280);
+      }, dur);
     }
 
     // Haptic feedback (Android only — no-op on iOS)
@@ -8597,6 +8630,59 @@
       }
     };
     updateOfflineBanner();
+
+    // ── A1: lazy + decoding-async on every dynamic <img> ──
+    // Catches images created by innerHTML / appendChild after boot. Skips images
+    // that are above-the-fold heroes (banner-art, npArt, nowArt) or already tagged.
+    (function lazyImageObserver() {
+      const SKIP = (img) => img.classList?.contains("banner-art") || img.id === "npArt" || img.id === "nowArt";
+      const apply = (img) => {
+        if (SKIP(img)) return;
+        if (!img.hasAttribute("loading")) img.setAttribute("loading", "lazy");
+        if (!img.hasAttribute("decoding")) img.setAttribute("decoding", "async");
+      };
+      // Apply to existing images at boot
+      document.querySelectorAll("img").forEach(apply);
+      // Watch for newly inserted images
+      new MutationObserver(muts => {
+        for (const m of muts) {
+          for (const n of m.addedNodes) {
+            if (n.nodeType !== 1) continue;
+            if (n.tagName === "IMG") apply(n);
+            else n.querySelectorAll?.("img").forEach(apply);
+          }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    })();
+
+    // ── B9: re-pick onboarding entry ──
+    // Once a user is past first-run, the only way to redo onboarding was to
+    // clear localStorage. Expose a small "Pick languages & artists" button at
+    // the bottom of the Insights modal — that's our de facto user-settings surface.
+    function _injectOnboardingRedoBtn() {
+      const body = $("insightsBody");
+      if (!body || body.querySelector("#redoOnboardBtn")) return;
+      const btn = document.createElement("button");
+      btn.id = "redoOnboardBtn";
+      btn.className = "btn-ghost";
+      btn.style.cssText = "margin-top:18px;width:100%;border:1px solid var(--divider);";
+      btn.textContent = "Re-pick languages & artists";
+      btn.onclick = () => {
+        try { localStorage.removeItem(userKey("onboarded")); } catch {}
+        closeModal($("insightsModal"));
+        if (typeof showOnboarding === "function") showOnboarding();
+      };
+      body.appendChild(btn);
+    }
+    // Watch the insights modal for visibility flips so the redo button appears
+    // every time it opens, regardless of how openInsights was wired.
+    (function watchInsightsModal() {
+      const modal = $("insightsModal");
+      if (!modal) return;
+      new MutationObserver(() => {
+        if (!modal.classList.contains("hidden")) _injectOnboardingRedoBtn();
+      }).observe(modal, { attributes: true, attributeFilter: ["class"] });
+    })();
 
     // ── G3: UCB1 reward delegation ──
     // One-shot delegated click handler on #homeSections — when any card inside
