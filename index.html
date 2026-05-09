@@ -92,6 +92,10 @@
       height: auto;
       position: relative;
       z-index: 2;
+      /* Drops the dark square baked into the PNG against the splash bg.
+         mix-blend-mode: screen means near-black pixels in the logo become
+         transparent against any background; the cyan/purple bars stay visible. */
+      mix-blend-mode: screen;
       filter: drop-shadow(0 12px 40px rgba(139,92,255,0.45));
       animation: splashLogoIn 1.1s cubic-bezier(0.2, 0.7, 0.2, 1) both;
     }
