@@ -6187,7 +6187,8 @@
       langsMsg.textContent = "";
 
       nextBtn.onclick = async () => {
-        if (pickedLangs.size < 1) return;
+        if (pickedLangs.size < 1 || nextBtn.disabled) return;
+        nextBtn.disabled = true; // re-enabled by Back; blocks double-tap refetch races
         // Save langs immediately so the artist fetch can use them.
         state.userLangs = Array.from(pickedLangs);
         try {
@@ -6199,126 +6200,89 @@
         // Move to step 2 — fetch artist grid
         step1.classList.add("hidden");
         step2.classList.remove("hidden");
-        artWrap.innerHTML = "";
-        countEl.textContent = "0 / 3 selected";
-        doneBtn.disabled = true;
+        countEl.textContent = `${pickedArtists.size} / 3 selected`;
+        doneBtn.disabled = pickedArtists.size < 3;
+        doneBtn.textContent = "Done"; // may still say "Skip" from a failed earlier load
         artWrap.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-sub);padding:24px;">Loading artists…</div>';
 
-        // Build the artist pool from a CURATED per-language seed list of canonical
-        // popular artists (the same approach Spotify and JioSaavn's own onboarding
-        // take — there is no "/top-artists?language=" endpoint in the JioSaavn API,
-        // verified across saavn.dev, sumitkolhe/jiosaavn-api, and JioSaavn's
-        // webapi.getLaunchData (which returns a global, non-language-filtered list).
-        // We resolve each seed by id via /artists/{id} so we get the canonical
-        // image + role, and fall back to /search/artists then /modules credits if
-        // any IDs 404 or the language has too few entries.
+        // Build the artist pool from CURATED per-language NAMES resolved live
+        // via /search/artists. v1 hardcoded JioSaavn artist IDs — those turned
+        // out to be unstable garbage outside Tamil ("The Weeknd"'s id resolved
+        // to a random Polish singer, "BTS" to "Charles capito"; verified live
+        // 2026-06-13). Names are stable, search's top name-match is reliable,
+        // and search results carry working CDN images. There is still no
+        // "/top-artists?language=" endpoint in the JioSaavn API.
         const CURATED_ARTISTS = {
-          tamil: [
-            { id: "455663", name: "Anirudh Ravichander" },
-            { id: "456269", name: "A.R. Rahman" },
-            { id: "456091", name: "Yuvan Shankar Raja" },
-            { id: "457536", name: "Ilaiyaraaja" },
-            { id: "455454", name: "G.V. Prakash Kumar" },
-            { id: "689580", name: "Sid Sriram" },
-            { id: "455243", name: "Harris Jayaraj" },
-            { id: "773021", name: "Hiphop Tamizha" }
-          ],
-          hindi: [
-            { id: "459320", name: "Arijit Singh" },
-            { id: "455130", name: "Pritam" },
-            { id: "459750", name: "Shreya Ghoshal" },
-            { id: "464932", name: "Neha Kakkar" },
-            { id: "485956", name: "Yo Yo Honey Singh" },
-            { id: "455120", name: "Alka Yagnik" },
-            { id: "455142", name: "Kumar Sanu" },
-            { id: "455127", name: "Udit Narayan" }
-          ],
-          english: [
-            { id: "614200", name: "The Weeknd" },
-            { id: "562955", name: "Ed Sheeran" },
-            { id: "600555", name: "Taylor Swift" },
-            { id: "567980", name: "Justin Bieber" },
-            { id: "605340", name: "Drake" },
-            { id: "703105", name: "Billie Eilish" },
-            { id: "581175", name: "Bruno Mars" },
-            { id: "568565", name: "Dua Lipa" }
-          ],
-          telugu: [
-            { id: "702553", name: "Devi Sri Prasad" },
-            { id: "459072", name: "S. S. Thaman" },
-            { id: "676277", name: "Anurag Kulkarni" },
-            { id: "689580", name: "Sid Sriram" },
-            { id: "455461", name: "M. M. Keeravani" },
-            { id: "741999", name: "S. P. Balasubrahmanyam" }
-          ],
-          malayalam: [
-            { id: "455143", name: "K. J. Yesudas" },
-            { id: "455162", name: "Hariharan" },
-            { id: "679242", name: "Vineeth Sreenivasan" },
-            { id: "678975", name: "Shaan Rahman" },
-            { id: "688492", name: "Sushin Shyam" },
-            { id: "685133", name: "Jakes Bejoy" }
-          ],
-          punjabi: [
-            { id: "881158", name: "Diljit Dosanjh" },
-            { id: "881144", name: "Sidhu Moose Wala" },
-            { id: "881127", name: "AP Dhillon" },
-            { id: "881130", name: "Karan Aujla" },
-            { id: "485956", name: "Yo Yo Honey Singh" },
-            { id: "881172", name: "Guru Randhawa" }
-          ],
-          korean: [
-            { id: "3635988", name: "BTS" },
-            { id: "3818635", name: "BLACKPINK" },
-            { id: "4396081", name: "Stray Kids" },
-            { id: "4396080", name: "NewJeans" },
-            { id: "4396079", name: "TWICE" },
-            { id: "4396082", name: "SEVENTEEN" }
-          ]
+          tamil: ["Anirudh Ravichander", "A.R. Rahman", "Yuvan Shankar Raja", "Ilaiyaraaja", "G.V. Prakash Kumar", "Sid Sriram", "Harris Jayaraj", "Hiphop Tamizha"],
+          hindi: ["Arijit Singh", "Pritam", "Shreya Ghoshal", "Neha Kakkar", "Yo Yo Honey Singh", "Alka Yagnik", "Kumar Sanu", "Udit Narayan"],
+          english: ["The Weeknd", "Ed Sheeran", "Taylor Swift", "Justin Bieber", "Drake", "Billie Eilish", "Bruno Mars", "Dua Lipa"],
+          telugu: ["Devi Sri Prasad", "Thaman S", "Anurag Kulkarni", "Sid Sriram", "M.M. Keeravani", "S.P. Balasubrahmanyam"],
+          malayalam: ["K.J. Yesudas", "Hariharan", "Vineeth Sreenivasan", "Shaan Rahman", "Sushin Shyam", "Jakes Bejoy"],
+          punjabi: ["Diljit Dosanjh", "Sidhu Moose Wala", "AP Dhillon", "Karan Aujla", "Yo Yo Honey Singh", "Guru Randhawa"],
+          korean: ["BTS", "BLACKPINK", "Stray Kids", "NewJeans", "TWICE", "SEVENTEEN"]
         };
 
         const seen = new Map();
         const PER_LANG = 6;
 
-        // Stage 1: resolve curated IDs in parallel per language. Skips 404s gracefully.
-        const fetchArtistMeta = async (id) => {
+        // Resolve one curated name → canonical artist. Prefers the exact
+        // normalized name match in the top results, then a clean prefix match
+        // (no "Feat." composites), then the top hit — famous names rank first.
+        const _normName = (s) => {
+          try { return (s || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ""); }
+          catch { return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+        };
+        const resolveByName = async (name) => {
           try {
-            const r = await apiFetch(`/artists/${encodeURIComponent(id)}?songCount=0&albumCount=0`);
-            const a = r?.data;
-            if (!a?.id || !a?.name) return null;
-            const imgs = Array.isArray(a.image) ? a.image : [];
+            const r = await apiFetch(`/search/artists?query=${encodeURIComponent(name)}&page=0&limit=5`);
+            const results = r?.data?.results || [];
+            const want = _normName(name);
+            const pick = results.find(a => _normName(decode(a?.name || "")) === want)
+              || results.find(a => a?.name && !/feat\.|,|&/i.test(a.name) && _normName(decode(a.name)).startsWith(want))
+              || results[0];
+            if (!pick?.id || !pick?.name) return null;
+            const imgs = Array.isArray(pick.image) ? pick.image : [];
             const image = (imgs.length ? imgs[imgs.length - 1]?.url : "")
-              || (typeof a.image === "string" ? a.image : "");
+              || (typeof pick.image === "string" ? pick.image : "");
             if (!image) return null;
-            return {
-              id: a.id, name: decode(a.name), image,
-              role: a.role || a.type || "Artist", followers: a.followerCount || 0
-            };
+            return { id: pick.id, name: decode(pick.name), image, role: pick.role || "Artist", followers: 0 };
           } catch { return null; }
         };
 
-        for (const lang of state.userLangs) {
-          const seeds = CURATED_ARTISTS[lang] || [];
-          if (!seeds.length) continue;
-          const resolved = await Promise.all(seeds.map(s => fetchArtistMeta(s.id)));
-          let added = 0;
-          for (const a of resolved) {
-            if (!a) continue;
-            if (added >= PER_LANG) break;
-            if (seen.has(a.id)) continue;
-            seen.set(a.id, a);
-            added++;
+        // 7-day cache keyed by the language set — Back→Next and re-opens are
+        // instant, and the search burst runs at most once a week per combo.
+        const _obCacheKey = "isai_onboard_pool_v2";
+        const _langsKey = state.userLangs.slice().sort().join(",");
+        const _obCached = safeParse(localStorage.getItem(_obCacheKey), null);
+        if (_obCached && _obCached.key === _langsKey && Array.isArray(_obCached.artists)
+            && _obCached.artists.length >= 4 && Date.now() - (_obCached.ts || 0) < 7 * 86_400_000) {
+          _obCached.artists.forEach(a => { if (a?.id && !seen.has(a.id)) seen.set(a.id, a); });
+        } else {
+          // Stage 1: every language × name in ONE parallel burst (~1-2s).
+          // The old per-language sequential batches took 15-20s on a phone.
+          const jobs = [];
+          for (const lang of state.userLangs) {
+            (CURATED_ARTISTS[lang] || []).forEach(name => jobs.push({ lang, name }));
           }
-        }
+          const resolved = await Promise.all(jobs.map(j => resolveByName(j.name)));
+          const perLang = {};
+          resolved.forEach((a, i) => {
+            if (!a || seen.has(a.id)) return;
+            const lang = jobs[i].lang;
+            perLang[lang] = perLang[lang] || 0;
+            if (perLang[lang] >= PER_LANG) return;
+            seen.set(a.id, a);
+            perLang[lang]++;
+          });
 
-        // Stage 2: backfill via /search/artists if a language returned <3 valid entries
-        // (covers languages we didn't curate, e.g. bengali / spanish / arabic).
-        const undercoveredLangs = state.userLangs.filter(l => !CURATED_ARTISTS[l] || CURATED_ARTISTS[l].length < 3);
-        if (undercoveredLangs.length || seen.size < state.userLangs.length * 4) {
-          const searchLangs = undercoveredLangs.length ? undercoveredLangs : state.userLangs;
-          for (const lang of searchLangs) {
-            try {
-              const r = await apiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=10`);
+          // Stage 2: generic-search backfill for languages we didn't curate
+          // (bengali / spanish / arabic …), in parallel.
+          const undercoveredLangs = state.userLangs.filter(l => !CURATED_ARTISTS[l]);
+          if (undercoveredLangs.length) {
+            const backfills = await Promise.all(undercoveredLangs.map(lang =>
+              apiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=10`).catch(() => null)
+            ));
+            for (const r of backfills) {
               const results = r?.data?.results || [];
               let added = 0;
               for (const a of results) {
@@ -6331,6 +6295,13 @@
                 seen.set(a.id, { id: a.id, name: decode(a.name), image, role: a.role || "Artist", followers: 0 });
                 added++;
               }
+            }
+          }
+          if (seen.size >= 4) {
+            try {
+              localStorage.setItem(_obCacheKey, JSON.stringify({
+                key: _langsKey, ts: Date.now(), artists: Array.from(seen.values())
+              }));
             } catch {}
           }
         }
@@ -6365,14 +6336,23 @@
           return;
         }
 
+        // Drop any earlier picks that aren't in the (re)built pool, then render
+        // tiles reflecting current selection — Back→Next used to render every
+        // tile unselected while the picks stayed counted, inverting toggles.
+        for (const id of Array.from(pickedArtists.keys())) {
+          if (!seen.has(id)) pickedArtists.delete(id);
+        }
         for (const a of seen.values()) {
           const tile = document.createElement("div");
-          tile.className = "ob-art-tile";
+          const isPicked = pickedArtists.has(a.id);
+          tile.className = "ob-art-tile" + (isPicked ? " selected" : "");
           tile.setAttribute("role", "button");
           tile.tabIndex = 0;
-          tile.setAttribute("aria-pressed", "false");
+          tile.setAttribute("aria-pressed", isPicked ? "true" : "false");
+          // No loading="lazy" here — it's a modal grid the user is actively
+          // looking at; lazy just makes tiles pop in while scrolling on iOS.
           tile.innerHTML = `
-            <div class="ob-art-img-wrap"><img src="${escapeAttr(a.image)}" alt="" loading="lazy"></div>
+            <div class="ob-art-img-wrap"><img src="${escapeAttr(typeof imgSized === "function" ? imgSized(a.image, 96) : a.image)}" alt="" decoding="async"></div>
             <div class="ob-art-name">${escapeHtml(a.name)}</div>
           `;
           const toggle = () => {
@@ -6388,11 +6368,14 @@
           tile.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
           artWrap.appendChild(tile);
         }
+        countEl.textContent = `${pickedArtists.size} / 3 selected`;
+        doneBtn.disabled = pickedArtists.size < 3;
       };
 
       backBtn.onclick = () => {
         step2.classList.add("hidden");
         step1.classList.remove("hidden");
+        nextBtn.disabled = pickedLangs.size < 1;
       };
 
       doneBtn.onclick = () => {
@@ -6532,6 +6515,7 @@
           localStorage.removeItem(CACHE_KEY);
           localStorage.removeItem(MODULES_CACHE_KEY);
           localStorage.removeItem(DEAD_KEY);
+          localStorage.removeItem("isai_onboard_pool_v2");
         } catch {}
         // Drop the in-memory module snapshot too — otherwise the next render
         // would still use the stale data even though localStorage is clean.
