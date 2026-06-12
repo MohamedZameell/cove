@@ -884,6 +884,27 @@
       margin-bottom: 32px;
     }
 
+    /* Horizontal snap shelf — one row per home section, scrolls sideways.
+       Replaces the wrapping grid on the homepage so 12-item sections don't
+       stack into a 6-row wall on phones. */
+    .card-shelf {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 180px;
+      gap: 16px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      overscroll-behavior-x: contain;
+      scroll-snap-type: x proximity;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      padding-bottom: 6px;
+    }
+    .card-shelf::-webkit-scrollbar { display: none; }
+    .card-shelf > .card { scroll-snap-align: start; }
+    /* Genre banners are landscape — wider columns */
+    .card-shelf--wide { grid-auto-columns: 250px; }
+
     .card {
       background: var(--bg-card);
       border-radius: var(--radius-md);
@@ -1560,6 +1581,7 @@
       .sidebar-nav-item { justify-content: center; padding: 12px; width: 48px; }
       .main-content { margin-left: 0; }
       .card-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; }
+      .card-shelf { grid-auto-columns: 160px; }
     }
 
     /* Mobile */
@@ -1621,6 +1643,16 @@
       .featured-banner .banner-play { width: 44px; height: 44px; }
 
       .card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+      /* Shelves bleed edge-to-edge so cards scroll under the screen edge,
+         with scroll-padding keeping snap aligned to the page gutter. */
+      .card-shelf {
+        grid-auto-columns: 41vw;
+        gap: 12px;
+        margin-inline: -16px;
+        padding-inline: 16px;
+        scroll-padding-inline: 16px;
+      }
+      .card-shelf--wide { grid-auto-columns: 62vw; }
       .card { padding: 12px; }
       .card .card-play { opacity: 1; transform: translateY(0); width: 44px; height: 44px; }
       .card .card-play svg { width: 18px; height: 18px; }
@@ -2816,12 +2848,12 @@
         </div>
 
         <!-- Location prompt banner -->
-        <div id="locationBanner" class="hidden" style="background:linear-gradient(135deg,#1db954,#0d7a3a);padding:14px 18px;border-radius:10px;margin:8px 0 20px;display:flex;align-items:center;gap:12px;">
+        <div id="locationBanner" class="hidden" style="background:linear-gradient(135deg,rgba(139,92,255,0.16),rgba(62,193,255,0.08));border:1px solid rgba(139,92,255,0.35);padding:14px 18px;border-radius:12px;margin:8px 0 20px;display:flex;align-items:center;gap:12px;">
           <div style="flex:1;">
-            <div style="font-weight:700;font-size:0.95rem;color:#fff;">Tune Cove for your region</div>
-            <div style="font-size:0.78rem;color:rgba(255,255,255,0.85);">Allow location to get music in your local languages.</div>
+            <div style="font-weight:700;font-size:0.95rem;color:var(--text);">Tune Cove for your region</div>
+            <div style="font-size:0.78rem;color:var(--text-sub);">Allow location to get music in your local languages.</div>
           </div>
-          <button id="locationBannerBtn" style="background:#fff;color:#000;border:none;padding:8px 16px;border-radius:20px;font-weight:700;font-size:0.82rem;cursor:pointer;">Allow</button>
+          <button id="locationBannerBtn" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:20px;font-weight:700;font-size:0.82rem;cursor:pointer;">Allow</button>
         </div>
 
         <!-- Quick Picks: recents + Daily Mix + new releases, 2x4 -->
@@ -2830,7 +2862,18 @@
         </div>
 
         <div id="skeletonState">
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:20px;">
+          <div class="skeleton" style="height:22px;width:180px;border-radius:6px;margin-bottom:16px"></div>
+          <div class="card-shelf" style="margin-bottom:36px">
+            <div class="skeleton" style="height:220px;border-radius:8px"></div>
+            <div class="skeleton" style="height:220px;border-radius:8px"></div>
+            <div class="skeleton" style="height:220px;border-radius:8px"></div>
+            <div class="skeleton" style="height:220px;border-radius:8px"></div>
+            <div class="skeleton" style="height:220px;border-radius:8px"></div>
+            <div class="skeleton" style="height:220px;border-radius:8px"></div>
+          </div>
+          <div class="skeleton" style="height:22px;width:140px;border-radius:6px;margin-bottom:16px"></div>
+          <div class="card-shelf">
+            <div class="skeleton" style="height:220px;border-radius:8px"></div>
             <div class="skeleton" style="height:220px;border-radius:8px"></div>
             <div class="skeleton" style="height:220px;border-radius:8px"></div>
             <div class="skeleton" style="height:220px;border-radius:8px"></div>
@@ -3364,6 +3407,45 @@
     const LOC_KEY = "isai_location_v1";
     const DEAD_KEY = "isai_dead_albums";
     const CACHE_TTL = 3600000;
+
+    // ── Homepage /modules cache (stale-while-revalidate) ──
+    // Within the fresh window we render straight from cache with zero network.
+    // Between fresh and max-age we paint from cache instantly and refresh in
+    // the background. Past max-age the cache is ignored.
+    const MODULES_CACHE_KEY = "isai_modules_v1";
+    const MODULES_FRESH_MS = 30 * 60 * 1000;
+    const MODULES_MAX_AGE_MS = 24 * 3600 * 1000;
+
+    // Strip the /modules payload to the keys the homepage actually renders —
+    // the raw payload carries dozens of unused modules and is too big to cache.
+    function pruneModulesPayload(data) {
+      const keep = {};
+      const keys = ["new_albums", "featured_playlists", "charts", "genres",
+                    "tag_mixes", "editorial", "top_playlists", "promoted", "discover"];
+      for (const k of keys) {
+        if (Array.isArray(data[k])) keep[k] = data[k];
+        if (data[k + "_title"]) keep[k + "_title"] = data[k + "_title"];
+      }
+      return keep;
+    }
+    // langsKey optional — Quick Picks reads whatever payload is cached without
+    // caring which language set produced it.
+    function readModulesCache(langsKey) {
+      const c = safeParse(localStorage.getItem(MODULES_CACHE_KEY), null);
+      if (!c || !c.data) return null;
+      if (langsKey !== undefined && c.langs !== langsKey) return null;
+      if (Date.now() - (c.ts || 0) > MODULES_MAX_AGE_MS) return null;
+      return c;
+    }
+    function writeModulesCache(langsKey, data) {
+      try {
+        localStorage.setItem(MODULES_CACHE_KEY,
+          JSON.stringify({ ts: Date.now(), langs: langsKey, data: pruneModulesPayload(data) }));
+      } catch (e) {
+        // Quota exceeded — homepage still works, just without the instant paint.
+        console.warn("[modules-cache] skipped:", e?.message || e);
+      }
+    }
 
     function getDeadAlbums() {
       try { return JSON.parse(localStorage.getItem(DEAD_KEY) || "[]"); } catch { return []; }
@@ -5087,36 +5169,45 @@
         state.currentIndex = index;
       }
       const song = state.currentQueue[state.currentIndex];
+
+      // Update the player bar + overlay optimistically, before the source
+      // resolves — switching songs feels instant even when the src needs a fetch.
+      crossfadeArt(dom.nowArt, song.image || DEFAULT_ART);
+      dom.nowTitle.textContent = song.title;
+      dom.nowArtist.textContent = song.artist;
+      dom.totalTime.textContent = fmt(song.duration);
+      updateNowFav();
+      refreshActiveSongRows();
+      updateNowPlayingOverlay(song);
+
+      // Capture the auto-advance flag before any await — it marks this call as
+      // a natural track-end transition (set by the timeupdate auto-crossfade).
+      const wasAutoAdvance = autoXfadeAdvance;
+      autoXfadeAdvance = false;
+
       const src = await resolveSource(song);
       if (!src) { skipNext(); return; }
 
-      // Crossfade
-      if (state.crossfade && !audio.paused && audio.currentTime > 0) {
+      // Crossfade only on natural track-end transitions, and only where the
+      // browser lets us script volume (iOS doesn't — both tracks would play at
+      // full volume). Manual switches hard-cut: kill any in-flight fade and the
+      // old track immediately, then start the new one.
+      if (wasAutoAdvance && state.crossfade && canFadeVolume && !audio.paused && audio.currentTime > 0) {
         crossfadeTo(src);
         // crossfadeTo eventually reassigns audio.src; track the blob so the next
         // playSongAt revokes it and we don't leak.
         audio.dataset.blobUrl = src.startsWith("blob:") ? src : "";
       } else {
+        stopCrossfadeNow();
         audio.dataset.blobUrl = src.startsWith("blob:") ? src : "";
         audio.src = src;
         try { await audio.play(); } catch (err) { console.warn("Playback failed", err); skipNext(); return; }
       }
-
-      // Update player bar UI
-      crossfadeArt(dom.nowArt, song.image || DEFAULT_ART);
-      dom.nowTitle.textContent = song.title;
-      dom.nowArtist.textContent = song.artist;
-      dom.totalTime.textContent = fmt(song.duration);
       updatePlayBtn(true);
-      updateNowFav();
-      refreshActiveSongRows();
 
       // Announce to assistive tech
       const announcer = $("liveAnnouncer");
       if (announcer) announcer.textContent = `Now playing ${song.title} by ${song.artist}`;
-
-      // Update now-playing overlay
-      updateNowPlayingOverlay(song);
 
       // Extract color for dynamic bg
       extractColor(song.image);
@@ -5360,12 +5451,15 @@
       // MediaSession position state — skipped to prevent iOS showing seek ±10s buttons
       // Synced lyrics highlight
       if (state.syncedLyrics && state.syncedLyrics.length) highlightSyncedLyric(audio.currentTime);
-      // Auto-crossfade: start crossfading before track ends
-      if (state.crossfade && !xfadeActive && audio.duration > 0) {
+      // Auto-crossfade: start crossfading before track ends. Skipped where
+      // volume can't be scripted (iOS) — there the natural `ended` event
+      // advances the queue with a clean cut instead of a full-volume overlap.
+      if (state.crossfade && canFadeVolume && !xfadeActive && audio.duration > 0) {
         const remaining = audio.duration - audio.currentTime;
         if (remaining <= CROSSFADE_MS / 1000 && remaining > 0.5 && state.repeatMode !== "one") {
           const nextIdx = state.currentIndex + 1;
           if (nextIdx < state.currentQueue.length || state.repeatMode === "all") {
+            autoXfadeAdvance = true;
             skipNext(true);
           }
         }
@@ -6370,6 +6464,7 @@
       $("settingsClearCache").onclick = () => {
         try {
           localStorage.removeItem(CACHE_KEY);
+          localStorage.removeItem(MODULES_CACHE_KEY);
           localStorage.removeItem(DEAD_KEY);
         } catch {}
         // Drop the in-memory module snapshot too — otherwise the next render
@@ -7135,12 +7230,14 @@
 
     function removeDeadFromHome() {
       const dead = new Set(getDeadAlbums());
-      document.querySelectorAll(".card-grid .card").forEach(card => {
+      document.querySelectorAll(".card-grid .card, .card-shelf .card").forEach(card => {
         if (card._itemId && dead.has(card._itemId)) card.remove();
       });
-      // Remove empty sections
+      // Remove module sections whose shelf emptied out. Reserved shells
+      // (data-section-key) stay — they're empty/hidden by design until filled.
       document.querySelectorAll("#homeSections > div").forEach(sec => {
-        const grid = sec.querySelector(".card-grid");
+        if (sec.dataset.sectionKey) return;
+        const grid = sec.querySelector(".card-grid, .card-shelf");
         if (grid && !grid.children.length) sec.remove();
       });
     }
@@ -7258,7 +7355,7 @@
         sectionEl.dataset.sectionIndex = String(i);
         sectionEl.innerHTML = `
           <div class="section-header"><h3>${section.title}</h3></div>
-          <div class="card-grid">${skelCard.repeat(6)}</div>`;
+          <div class="card-shelf">${skelCard.repeat(6)}</div>`;
         container.appendChild(sectionEl);
       });
       showHome();
@@ -7271,7 +7368,7 @@
           const sectionEl = container.querySelector(`[data-section-index="${i}"]`);
           if (!sectionEl) return;
           if (!items.length) { sectionEl.remove(); return; }
-          const grid = sectionEl.querySelector(".card-grid");
+          const grid = sectionEl.querySelector(".card-shelf");
           grid.innerHTML = ""; // remove skeleton cards
           items.forEach(item => grid.appendChild(renderHomeCard(item)));
           renderedAny = true;
@@ -7393,8 +7490,40 @@
       return r;
     }
 
-    async function loadHomeFromModules() {
+    async function loadHomeFromModules(force = false) {
+      const langs = state.userLangs.length ? state.userLangs : ["english", "hindi"];
+      const langsKey = langs.join(",");
+      const cached = force ? null : readModulesCache(langsKey);
+      if (cached) {
+        renderHomeModuleSections(cached.data);
+        // Stale-while-revalidate: painted from cache instantly above; refresh
+        // in the background once the fresh window lapses. Re-render only when
+        // the payload actually changed AND the user is still at the top of
+        // Home — never yank content out from under them.
+        if (Date.now() - cached.ts > MODULES_FRESH_MS) {
+          fetchHomeModules().then(data => {
+            writeModulesCache(langsKey, data);
+            const sig = arr => (arr || []).slice(0, 12).map(x => x && x.id).join(",");
+            const changed = sig(data.new_albums) !== sig(cached.data.new_albums)
+              || sig(data.featured_playlists) !== sig(cached.data.featured_playlists);
+            if (changed && state.currentPage === "home" && (dom.mainContent?.scrollTop || 0) < 80) {
+              renderHomeModuleSections(data);
+            }
+          }).catch(() => {});
+        }
+        return;
+      }
       const data = await fetchHomeModules();
+      writeModulesCache(langsKey, data);
+      renderHomeModuleSections(data);
+    }
+
+    // Builds the whole homepage synchronously from a /modules payload.
+    // Layout contract: personal rows → language rows (dominant language leads)
+    // → reserved shells for async rows → UCB1-ranked editorial tail → podcasts.
+    // Async rows fill pre-reserved shells IN PLACE — nothing inserts above
+    // content the user is already looking at.
+    function renderHomeModuleSections(data) {
       // Cache the parsed modules payload so the Charts destination page can
       // reuse it without re-hitting the network.
       state._modulesData = data;
@@ -7402,59 +7531,6 @@
       const newAlbums = (data.new_albums || []).map(normalizeModuleAlbum).filter(a => a.id && a.image && !dead.has(a.id));
       const playlists = (data.featured_playlists || []).map(normalizeModulePlaylist).filter(p => p.id && p.image);
       const charts = (data.charts || []).map(normalizeModulePlaylist).filter(c => c.id && c.image);
-
-      // Featured artists: pulled from /search/artists per language, ranked by
-      // JioSaavn's own popularity. Earlier we synthesized this row from
-      // new_albums[].more_info.artistMap credits — that surfaced session musicians
-      // and obscure lyricists. Same fix that landed on the onboarding picker.
-      // We keep the new_albums credits as a last-ditch fallback when search fails.
-      const artistById = new Map();
-      const _langsForArtists = (state.userLangs && state.userLangs.length)
-        ? state.userLangs.slice(0, 3)
-        : ["english"];
-      const _searchPerLang = 6;
-      const _featuredFetches = await Promise.all(
-        _langsForArtists.map(lang =>
-          apiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=12`).catch(() => null)
-        )
-      );
-      // Bail if the user navigated away during the await — no point building
-      // DOM for a page they're not on.
-      if (state.currentPage && state.currentPage !== "home") return;
-      _featuredFetches.forEach(r => {
-        const results = r?.data?.results || [];
-        let added = 0;
-        for (const a of results) {
-          if (added >= _searchPerLang) break;
-          if (!a?.id || !a?.name) continue;
-          if (artistById.has(a.id)) continue;
-          const imgs = Array.isArray(a.image) ? a.image : [];
-          const image = (imgs.length ? imgs[imgs.length - 1]?.url : "")
-            || (typeof a.image === "string" ? a.image : "");
-          if (!image) continue;
-          artistById.set(a.id, {
-            id: a.id, type: "artist",
-            title: decode(a.name),
-            image: bumpImageQuality ? bumpImageQuality(image) : image,
-            subtitle: a.role || "Artist"
-          });
-          added++;
-        }
-      });
-      // Fallback: if search returned nothing (rare), scrape new_albums credits.
-      if (artistById.size < 4) {
-        for (const raw of (data.new_albums || [])) {
-          const credited = raw?.more_info?.artistMap?.artists || [];
-          for (const a of credited) {
-            if (!a?.id || !a?.name || !a?.image) continue;
-            const role = (a.role || "").toLowerCase();
-            if (role && role !== "singer" && role !== "primary_artist") continue;
-            if (artistById.has(a.id)) continue;
-            artistById.set(a.id, normalizeModuleArtist(a));
-          }
-        }
-      }
-      const featuredArtists = Array.from(artistById.values()).filter(a => a.image).slice(0, 12);
 
       const userLangs = state.userLangs.length ? state.userLangs : ["english", "hindi"];
 
@@ -7514,10 +7590,9 @@
         }
       }
 
-      // Featured Artists — circular row, sits between language sections and editorial picks.
-      if (featuredArtists.length >= 4) {
-        sections.push({ key: "featured_artists", title: "Featured Artists", items: featuredArtists });
-      }
+      // Editorial / discovery rows collect into a separate tail — they render
+      // below the personalized shells and are UCB1-ranked among themselves.
+      const tail = [];
 
       // JioSaavn editorial mood/decade mixes (e.g. "Made For Your Moods",
       // "Endrendrum 2000s") arrive under tag_mixes / editorial. The keys can
@@ -7541,23 +7616,23 @@
           key === "discover" ? "Discover" :
           "Featured"
         ));
-        sections.push({ key: `editorial_${key}`, title: niceTitle, items: items.slice(0, 12) });
+        tail.push({ key: `editorial_${key}`, title: niceTitle, items: items.slice(0, 12) });
       }
 
       // Browse by Genre — landscape banner cards, click runs a search for the genre tag.
       const genres = (data.genres || []).map(normalizeModuleGenre).filter(g => g.image && g.title);
       if (genres.length) {
-        sections.push({ key: "browse_genres", title: "Browse by Genre", items: genres });
+        tail.push({ key: "browse_genres", title: "Browse by Genre", items: genres });
       }
 
       // JioSaavn editorial picks — featured playlists, mixed languages.
       // Filtered against usedPlaylistIds so we don't repeat editorial tiles here.
       const remainingPlaylists = playlists.filter(p => !usedPlaylistIds.has(p.id));
       if (remainingPlaylists.length) {
-        sections.push({ key: "featured_on_jiosaavn", title: "Featured on JioSaavn", items: remainingPlaylists.slice(0, 12) });
+        tail.push({ key: "featured_on_jiosaavn", title: "Featured on JioSaavn", items: remainingPlaylists.slice(0, 12) });
         remainingPlaylists.slice(0, 12).forEach(p => usedPlaylistIds.add(p.id));
         if (remainingPlaylists.length > 12) {
-          sections.push({ key: "more_for_you", title: "More for You", items: remainingPlaylists.slice(12, 24) });
+          tail.push({ key: "more_for_you", title: "More for You", items: remainingPlaylists.slice(12, 24) });
           remainingPlaylists.slice(12, 24).forEach(p => usedPlaylistIds.add(p.id));
         }
       }
@@ -7565,25 +7640,24 @@
       // Leftover albums in languages not in user prefs (international content at the bottom).
       const leftoverAlbums = newAlbums.filter(a => !usedAlbumIds.has(a.id));
       if (leftoverAlbums.length) {
-        sections.push({ key: "worldwide_albums", title: "New Releases Worldwide", items: leftoverAlbums.slice(0, 12) });
+        tail.push({ key: "worldwide_albums", title: "New Releases Worldwide", items: leftoverAlbums.slice(0, 12) });
       }
       const leftoverCharts = charts.filter(c => !usedChartIds.has(c.id));
       if (leftoverCharts.length) {
-        sections.push({ key: "worldwide_charts", title: "More Charts", items: leftoverCharts.slice(0, 12) });
+        tail.push({ key: "worldwide_charts", title: "More Charts", items: leftoverCharts.slice(0, 12) });
       }
 
       // Expose used playlist + chart IDs so the later-rendered "Top {lang} Hits"
       // row can dedupe against them and we don't show the same tile twice.
       state._renderedPlaylistIds = new Set([...usedPlaylistIds, ...usedChartIds]);
 
-      if (!sections.length) throw new Error("modules: nothing to render");
+      if (!sections.length && !tail.length) throw new Error("modules: nothing to render");
 
-      // ── G3: UCB1 module bandit ──
-      // Sort sections by per-user UCB1 score so rows the user actually engages with
-      // float up. New (unseen) sections always go first so each module gets one
-      // guaranteed impression before being judged. Mirrors the JioSaavn 2020
-      // engineering blog approach. The first language section is pinned to the
-      // very top so the page never loses its dominant-language anchor row.
+      // ── G3: UCB1 module bandit — editorial tail only ──
+      // Personal and language rows hold fixed slots so the page structure is
+      // stable visit to visit; the bandit ranks only the discovery rows below
+      // them. New (unseen) modules score Infinity so each gets one guaranteed
+      // impression before being judged.
       try {
         const taste = loadTaste();
         const totalImp = Object.values(taste.modules || {}).reduce((s, m) => s + (m.impressions || 0), 0);
@@ -7593,73 +7667,166 @@
           const mean = (m.reward || 0) / m.impressions;
           return mean + Math.sqrt(2 * Math.log(Math.max(2, totalImp)) / m.impressions);
         };
-        const pinTop = sections.length && sections[0].key && /^new_.+_albums$|_charts$/.test(sections[0].key)
-          ? sections.shift()
-          : null;
-        sections.sort((a, b) => ucbScore(b) - ucbScore(a));
-        if (pinTop) sections.unshift(pinTop);
+        tail.sort((a, b) => ucbScore(b) - ucbScore(a));
       } catch (err) {
         console.warn("[ucb1] section ranking skipped:", err?.message || err);
       }
-
-      // (Hero removed — replaced by Quick Picks 2x4 above. featuredBanner stays
-      // hidden via its initial class.) The existing updateGreeting() handles
-      // the "Good evening, …" header and is fired earlier by loadInitial().
 
       // Re-render Quick Picks now that new_albums are cached, so the grid can
       // pick up editorial entries to fill the 8 slots.
       renderRecentlyPlayed();
 
-      // Render directly — no skeleton-then-replace dance since we have everything in one shot.
       const container = $("homeSections");
       container.innerHTML = "";
-      sections.forEach(section => {
+
+      const addModuleSection = (sec, opts = {}) => {
         const sectionEl = document.createElement("div");
         sectionEl.className = "home-section";
         sectionEl.style.marginBottom = "36px";
         // G3: tag with module key so click delegation can credit reward and so
         // we can log impression for UCB1.
-        if (section.key) {
-          sectionEl.dataset.moduleKey = section.key;
-          if (typeof recordModuleImpression === "function") recordModuleImpression(section.key);
+        if (sec.key) {
+          sectionEl.dataset.moduleKey = sec.key;
+          if (typeof recordModuleImpression === "function") recordModuleImpression(sec.key);
         }
-        sectionEl.innerHTML = `<div class="section-header"><h3>${section.title}</h3></div>`;
-        const grid = document.createElement("div");
-        grid.className = "card-grid";
-        section.items.forEach(item => grid.appendChild(renderHomeCard(item)));
-        sectionEl.appendChild(grid);
+        sectionEl.innerHTML = `<div class="section-header"><h3>${escapeHtml(sec.title)}</h3></div>`;
+        const shelf = document.createElement("div");
+        shelf.className = "card-shelf" + (opts.wide ? " card-shelf--wide" : "");
+        sec.items.forEach(item => shelf.appendChild(renderHomeCard(item)));
+        sectionEl.appendChild(shelf);
         container.appendChild(sectionEl);
-      });
+      };
+
+      // 1. Personal rows — local data, fill instantly, fixed slots.
+      container.appendChild(makeHomeShell("followed-artists"));
+      container.appendChild(makeHomeShell("daily-mix"));
+      renderFollowedArtistsRow();
+      renderDailyMixes();
+
+      // 2. Language rows — the dominant language anchors the page.
+      sections.forEach(sec => addModuleSection(sec));
+
+      // 3. Reserved shells for async personalized rows (filled in place later).
+      container.appendChild(makeHomeShell("more-like"));
+      container.appendChild(makeHomeShell("lang-trending"));
+      container.appendChild(makeHomeShell("similar-artists"));
+      container.appendChild(makeHomeShell("featured_artists"));
+
+      // 4. Editorial / discovery tail, bandit-ranked.
+      tail.forEach(sec => addModuleSection(sec, { wide: sec.key === "browse_genres" }));
+
+      // 5. Podcasts pinned last.
+      container.appendChild(makeHomeShell("podcasts"));
+
       showHome();
 
       // Background: validate album cards and remove dead ones
-      const albumItems = sections.flatMap(s => s.items).filter(i => i.type === "album");
+      const albumItems = sections.concat(tail).flatMap(s => s.items).filter(i => i.type === "album");
       const alreadyDead = new Set(getDeadAlbums());
       const unchecked = albumItems.filter(a => !alreadyDead.has(a.id));
       if (unchecked.length) validateAlbumsInBackground(unchecked);
 
-      // Background: insert "More Like X" personalized row using last-played seed.
+      // Async fillers — each targets its reserved shell above, in place.
       loadMoreLikeThis().catch(() => {});
-      // G5: Similar Artists row from co-occurrence in top-song suggestions
       loadSimilarArtistsRow().catch(() => {});
-      // Personalized "Made For You" daily mixes from favorites + top-played clusters.
-      renderDailyMixes();
-      // From Your Library — followed artists as circular avatars at the top of
-      // homeSections. Renders last so it ends up above Made For You.
-      renderFollowedArtistsRow();
-      // G2: Replaced "What's Hot in {City}" with "Top {dominantLang} Hits".
-      // Cities like "Thiruporur" returned junk; language-keyed search is curated.
       renderLangTrendingRow().catch(() => {});
-      // Trending podcasts row — best-effort, hidden if JioSaavn returns nothing.
+      loadFeaturedArtistsRow(data).catch(() => {});
       renderPodcastsRow().catch(() => {});
+    }
+
+    // ── Home section shells ──
+    // Async rows render into pre-reserved, hidden slots so late content fills
+    // in place instead of inserting above what the user is reading.
+    function homeShell(key) {
+      const container = $("homeSections");
+      if (!container) return null;
+      try { return container.querySelector(`[data-section-key="${CSS.escape(key)}"]`); }
+      catch { return null; }
+    }
+    function makeHomeShell(key) {
+      const el = document.createElement("div");
+      el.className = "home-section hidden";
+      el.dataset.sectionKey = key;
+      el.style.marginBottom = "36px";
+      return el;
+    }
+    // `title` is interpolated into innerHTML — callers must pass static or
+    // pre-escaped strings. Empty/short card lists hide the shell entirely.
+    function fillHomeShell(key, title, cards, opts = {}) {
+      const el = homeShell(key);
+      if (!el) return null;
+      if (!cards || !cards.length) { el.classList.add("hidden"); el.innerHTML = ""; return el; }
+      el.innerHTML = `<div class="section-header"><h3>${title}</h3></div>`;
+      const shelf = document.createElement("div");
+      shelf.className = "card-shelf" + (opts.wide ? " card-shelf--wide" : "");
+      cards.forEach(c => shelf.appendChild(c));
+      el.appendChild(shelf);
+      el.classList.remove("hidden");
+      return el;
+    }
+
+    // Featured Artists — async filler. Used to block the homepage render with
+    // up to 3 /search/artists roundtrips; now it fills its shell when ready.
+    async function loadFeaturedArtistsRow(data) {
+      const artistById = new Map();
+      const langsForArtists = (state.userLangs && state.userLangs.length)
+        ? state.userLangs.slice(0, 3)
+        : ["english"];
+      const searchPerLang = 6;
+      const fetches = await Promise.all(
+        langsForArtists.map(lang =>
+          apiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=12`).catch(() => null)
+        )
+      );
+      fetches.forEach(r => {
+        const results = r?.data?.results || [];
+        let added = 0;
+        for (const a of results) {
+          if (added >= searchPerLang) break;
+          if (!a?.id || !a?.name) continue;
+          if (artistById.has(a.id)) continue;
+          const imgs = Array.isArray(a.image) ? a.image : [];
+          const image = (imgs.length ? imgs[imgs.length - 1]?.url : "")
+            || (typeof a.image === "string" ? a.image : "");
+          if (!image) continue;
+          artistById.set(a.id, {
+            id: a.id, type: "artist",
+            title: decode(a.name),
+            image: bumpImageQuality ? bumpImageQuality(image) : image,
+            subtitle: a.role || "Artist"
+          });
+          added++;
+        }
+      });
+      // Fallback: if search returned nothing (rare), scrape new_albums credits.
+      if (artistById.size < 4) {
+        for (const raw of (data?.new_albums || [])) {
+          const credited = raw?.more_info?.artistMap?.artists || [];
+          for (const a of credited) {
+            if (!a?.id || !a?.name || !a?.image) continue;
+            const role = (a.role || "").toLowerCase();
+            if (role && role !== "singer" && role !== "primary_artist") continue;
+            if (artistById.has(a.id)) continue;
+            artistById.set(a.id, normalizeModuleArtist(a));
+          }
+        }
+      }
+      const items = Array.from(artistById.values()).filter(a => a.image).slice(0, 12);
+      if (items.length < 4) { fillHomeShell("featured_artists", "", []); return; }
+      const el = fillHomeShell("featured_artists", "Featured Artists", items.map(a => renderHomeCard(a)));
+      // Keep the UCB1 bandit fed — this row was a ranked module before.
+      if (el) {
+        el.dataset.moduleKey = "featured_artists";
+        if (typeof recordModuleImpression === "function") recordModuleImpression("featured_artists");
+      }
     }
 
     // G2 + #6: "Top {lang} Hits" — one row per dominant language with >=25%
     // listening share. Bilingual users (e.g. 60% Tamil / 35% Hindi) get both
     // rows. Skips silently if a language returns fewer than 4 valid playlists.
     async function renderLangTrendingRow() {
-      const container = $("homeSections");
-      if (!container) return;
+      const zone = homeShell("lang-trending");
+      if (!zone) return;
       const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
       const langTitle = {
         tamil: "Tamil", hindi: "Hindi", english: "English", malayalam: "Malayalam",
@@ -7679,21 +7846,11 @@
       } else {
         langs = [(state.userLangs && state.userLangs[0]) || null].filter(Boolean);
       }
-      if (!langs.length) return;
+      if (!langs.length) { zone.classList.add("hidden"); zone.innerHTML = ""; return; }
 
-      // Remove any prior rows so language changes don't leave stale ones behind.
-      container.querySelectorAll('[data-section-key^="lang-trending"]').forEach(el => el.remove());
-
-      // Anchor: insert just below the personal rows (more-like / daily-mix / followed-artists)
-      // and above generic editorial picks.
-      const findAnchor = () => {
-        const beforeKey = ['[data-section-key="more-like"]', '[data-section-key="daily-mix"]', '[data-section-key="followed-artists"]', '[data-section-key^="lang-trending-"]'];
-        for (const sel of beforeKey) {
-          const all = container.querySelectorAll(sel);
-          if (all.length) return all[all.length - 1];
-        }
-        return null;
-      };
+      // Rebuild the zone from scratch so language changes don't leave stale rows.
+      zone.innerHTML = "";
+      zone.classList.add("hidden");
 
       // Quality filter for /search/playlists results — strips user-uploaded
       // junk that pollutes the row (names like "tamil_hits_2023", "best!!!",
@@ -7731,8 +7888,6 @@
           apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=20`).catch(() => null)
         )
       );
-      // Bail if the user navigated away during the await
-      if (state.currentPage && state.currentPage !== "home") return;
       for (let li = 0; li < langs.length; li++) {
         const lang = langs[li];
         const r = _langResponses[li];
@@ -7758,27 +7913,24 @@
         if (items.length < 4) continue;
         items.forEach(p => usedIds.add(p.id));
         state._renderedPlaylistIds = usedIds;
-        const sectionEl = document.createElement("div");
-        sectionEl.className = "home-section";
-        sectionEl.dataset.sectionKey = `lang-trending-${lang}`;
-        sectionEl.style.marginBottom = "36px";
-        sectionEl.innerHTML = `<div class="section-header"><h3>Top ${escapeHtml(niceLang)} Hits</h3></div>`;
-        const grid = document.createElement("div");
-        grid.className = "card-grid";
-        items.slice(0, 12).forEach(p => grid.appendChild(renderHomeCard(p)));
-        sectionEl.appendChild(grid);
-        const anchor = findAnchor();
-        if (anchor && anchor.nextSibling) container.insertBefore(sectionEl, anchor.nextSibling);
-        else if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
-        else container.appendChild(sectionEl);
+        // One block per language, stacked inside the reserved shell.
+        const block = document.createElement("div");
+        block.dataset.sectionKey = `lang-trending-${lang}`;
+        if (zone.children.length) block.style.marginTop = "36px";
+        block.innerHTML = `<div class="section-header"><h3>Top ${escapeHtml(niceLang)} Hits</h3></div>`;
+        const shelf = document.createElement("div");
+        shelf.className = "card-shelf";
+        items.slice(0, 12).forEach(p => shelf.appendChild(renderHomeCard(p)));
+        block.appendChild(shelf);
+        zone.appendChild(block);
+        zone.classList.remove("hidden");
       }
     }
 
     // Trending Podcasts — Phase E (best effort). Cards open the show URL in a
     // new tab since Cove doesn't yet have a podcast/episode playback flow.
     async function renderPodcastsRow() {
-      const container = $("homeSections");
-      if (!container) return;
+      if (!homeShell("podcasts")) return;
       // Always English query — JioSaavn has very thin podcast catalogs in
       // regional Indian languages, so "tamil podcasts" returned junk/empty.
       // The mixed-language results from "trending podcasts" beat that for everyone.
@@ -7799,17 +7951,8 @@
           };
         })
         .filter(Boolean);
-      if (items.length < 4) return;
-      const existing = container.querySelector('[data-section-key="podcasts"]');
-      if (existing) existing.remove();
-      const sectionEl = document.createElement("div");
-      sectionEl.className = "home-section";
-      sectionEl.dataset.sectionKey = "podcasts";
-      sectionEl.style.marginBottom = "36px";
-      sectionEl.innerHTML = `<div class="section-header"><h3>Trending Podcasts</h3></div>`;
-      const grid = document.createElement("div");
-      grid.className = "card-grid";
-      items.slice(0, 12).forEach(p => {
+      if (items.length < 4) { fillHomeShell("podcasts", "", []); return; }
+      const cards = items.slice(0, 12).map(p => {
         const card = renderHomeCard(p);
         // Override the click — Cove doesn't yet have a podcast player. Send
         // the user to JioSaavn's web page for the show.
@@ -7817,11 +7960,9 @@
           if (p.url) window.open(p.url, "_blank", "noopener,noreferrer");
           else toast("Podcast unavailable");
         };
-        grid.appendChild(card);
+        return card;
       });
-      sectionEl.appendChild(grid);
-      // Append at the bottom — podcasts sit below the rest of music content.
-      container.appendChild(sectionEl);
+      fillHomeShell("podcasts", "Trending Podcasts", cards);
     }
 
     // ── BROWSE / CHARTS DESTINATIONS (Phase E) ──
@@ -7911,37 +8052,19 @@
     // "From Your Library" homepage row — surfaces followed artists as a row of
     // circular cards. JioSaavn-style. Hidden when fewer than 3 follows exist.
     function renderFollowedArtistsRow() {
-      const container = $("homeSections");
-      if (!container) return;
-      const existing = container.querySelector('[data-section-key="followed-artists"]');
-      if (existing) existing.remove();
-
+      if (!homeShell("followed-artists")) return;
       const list = state.followedArtists || [];
-      if (list.length < 3) return;
-
-      const sectionEl = document.createElement("div");
-      sectionEl.className = "home-section";
-      sectionEl.dataset.sectionKey = "followed-artists";
-      sectionEl.style.marginBottom = "36px";
-      sectionEl.innerHTML = `<div class="section-header"><h3>From Your Library</h3></div>`;
-      const grid = document.createElement("div");
-      grid.className = "card-grid";
-      list.slice(0, 12).forEach(a => {
-        // Re-use the existing artist card style by going through renderHomeCard.
-        grid.appendChild(renderHomeCard({
-          type: "artist",
-          id: a.id,
-          title: a.name,
-          image: a.image,
-          subtitle: a.followers
-            ? `${Number(a.followers).toLocaleString()} followers`
-            : (a.role || "Artist")
-        }));
-      });
-      sectionEl.appendChild(grid);
-      // Insert at very top so it sits above Made For You.
-      if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
-      else container.appendChild(sectionEl);
+      if (list.length < 3) { fillHomeShell("followed-artists", "", []); return; }
+      const cards = list.slice(0, 12).map(a => renderHomeCard({
+        type: "artist",
+        id: a.id,
+        title: a.name,
+        image: a.image,
+        subtitle: a.followers
+          ? `${Number(a.followers).toLocaleString()} followers`
+          : (a.role || "Artist")
+      }));
+      fillHomeShell("followed-artists", "From Your Library", cards);
     }
 
     // Cluster the user's library by primary artist; surface up to 3 sizable clusters.
@@ -7978,33 +8101,18 @@
     }
 
     function renderDailyMixes() {
-      const container = $("homeSections");
-      if (!container) return;
-      const existing = container.querySelector('[data-section-key="daily-mix"]');
-      if (existing) existing.remove();
+      if (!homeShell("daily-mix")) return;
       const mixes = buildDailyMixes();
-      if (!mixes.length) return;
-      const sectionEl = document.createElement("div");
-      sectionEl.className = "home-section";
-      sectionEl.dataset.sectionKey = "daily-mix";
-      sectionEl.style.marginBottom = "36px";
-      sectionEl.innerHTML = `<div class="section-header"><h3>Made For You</h3></div>`;
-      const grid = document.createElement("div");
-      grid.className = "card-grid";
-      mixes.forEach(mix => {
-        grid.appendChild(renderHomeCard({
-          type: "mix",
-          id: mix.id,
-          title: mix.title,
-          subtitle: mix.subtitle,
-          image: mix.image,
-          _mixRef: mix
-        }));
-      });
-      sectionEl.appendChild(grid);
-      // Insert at the very top — Made For You leads if there's enough listening history.
-      if (container.firstElementChild) container.insertBefore(sectionEl, container.firstElementChild);
-      else container.appendChild(sectionEl);
+      if (!mixes.length) { fillHomeShell("daily-mix", "", []); return; }
+      const cards = mixes.map(mix => renderHomeCard({
+        type: "mix",
+        id: mix.id,
+        title: mix.title,
+        subtitle: mix.subtitle,
+        image: mix.image,
+        _mixRef: mix
+      }));
+      fillHomeShell("daily-mix", "Made For You", cards);
     }
 
     // Personalized row driven by /songs/{id}/suggestions.
@@ -8040,40 +8148,17 @@
       }
       if (!songs.length) return;
 
-      const container = $("homeSections");
-      if (!container) return;
-      // If a previous "More Like" section exists, replace it.
-      const existing = container.querySelector('[data-section-key="more-like"]');
-      if (existing) existing.remove();
-
-      const sectionEl = document.createElement("div");
-      sectionEl.className = "home-section";
-      sectionEl.dataset.sectionKey = "more-like";
-      sectionEl.style.marginBottom = "36px";
       const seedTitle = (seed.title || "").length > 24 ? seed.title.slice(0, 24) + "…" : (seed.title || "your last play");
-      sectionEl.innerHTML = `<div class="section-header"><h3>More like ${escapeHtml(seedTitle)}</h3></div>`;
-      const grid = document.createElement("div");
-      grid.className = "card-grid";
-      songs.forEach(song => {
-        const cardItem = {
-          type: "song",
-          id: song.id,
-          title: song.title,
-          image: song.image,
-          artist: song.artist,
-          _songRef: song,
-          _queueRef: songs
-        };
-        grid.appendChild(renderHomeCard(cardItem));
-      });
-      sectionEl.appendChild(grid);
-      // Insert near the top, after the first section so personalized row is above the fold.
-      const firstSection = container.firstElementChild;
-      if (firstSection && firstSection.nextSibling) {
-        container.insertBefore(sectionEl, firstSection.nextSibling);
-      } else {
-        container.appendChild(sectionEl);
-      }
+      const cards = songs.map(song => renderHomeCard({
+        type: "song",
+        id: song.id,
+        title: song.title,
+        image: song.image,
+        artist: song.artist,
+        _songRef: song,
+        _queueRef: songs
+      }));
+      fillHomeShell("more-like", `More like ${escapeHtml(seedTitle)}`, cards);
     }
 
     // ── G5: "Similar Artists" homepage row ──
@@ -8123,31 +8208,10 @@
         .sort((x, y) => y.count - x.count)
         .slice(0, 12);
       if (ranked.length < 4) return;
-
-      const container = $("homeSections");
-      if (!container) return;
-      const existing = container.querySelector('[data-section-key="similar-artists"]');
-      if (existing) existing.remove();
-
-      const sectionEl = document.createElement("div");
-      sectionEl.className = "home-section";
-      sectionEl.dataset.sectionKey = "similar-artists";
-      sectionEl.style.marginBottom = "36px";
-      sectionEl.innerHTML = `<div class="section-header"><h3>Similar Artists</h3></div>`;
-      const grid = document.createElement("div");
-      grid.className = "card-grid";
-      ranked.forEach(a => {
-        grid.appendChild(renderSearchArtistCard({
-          id: a.id, title: a.name, image: a.image, subtitle: a.role || "Artist"
-        }));
-      });
-      sectionEl.appendChild(grid);
-
-      // Insert just after "more-like" if present, else after the first section.
-      const anchor = container.querySelector('[data-section-key="more-like"]')
-        || container.firstElementChild;
-      if (anchor && anchor.nextSibling) container.insertBefore(sectionEl, anchor.nextSibling);
-      else container.appendChild(sectionEl);
+      const cards = ranked.map(a => renderSearchArtistCard({
+        id: a.id, title: a.name, image: a.image, subtitle: a.role || "Artist"
+      }));
+      fillHomeShell("similar-artists", "Similar Artists", cards);
     }
 
     async function validateAlbumsInBackground(albums) {
@@ -8188,7 +8252,7 @@
         ]);
       }
       try {
-        await loadHomeFromModules();
+        await loadHomeFromModules(force);
       } catch (err) {
         console.warn("Modules homepage failed, falling back to catalog:", err.message);
         await loadHomeSections();
@@ -8196,7 +8260,7 @@
     }
 
     dom.retryBtn.onclick = () => loadInitial(true);
-    dom.topbarRefresh.onclick = () => { localStorage.removeItem(CACHE_KEY); loadInitial(true); };
+    dom.topbarRefresh.onclick = () => { localStorage.removeItem(CACHE_KEY); localStorage.removeItem(MODULES_CACHE_KEY); loadInitial(true); };
 
     // ── PULL-TO-REFRESH ── (mobile, home page only)
     (function initPullToRefresh() {
@@ -8237,6 +8301,7 @@
           indicator.style.opacity = "1";
           indicator.querySelector("svg").style.animation = "spin 0.8s linear infinite";
           localStorage.removeItem(CACHE_KEY);
+          localStorage.removeItem(MODULES_CACHE_KEY);
           loadInitial(true).finally(() => {
             setTimeout(() => {
               indicator.style.transform = "translate(-50%, -100%)";
@@ -8259,14 +8324,42 @@
     const audio2 = $("audio2");
     let xfadeRAF = null;
     let xfadeActive = false;
+    let xfadeMasterVol = 1;
+    // Set by the track-end auto-advance right before it calls skipNext(), and
+    // consumed (reset) by playSongAt. Manual song changes — clicking a row,
+    // next/prev buttons, lock-screen controls — never set it, so they hard-cut
+    // instead of overlapping two songs for 3 seconds.
+    let autoXfadeAdvance = false;
+    // iOS Safari ignores writes to audio.volume (hardware-only volume), which
+    // turns a volume crossfade into both tracks playing at FULL volume. Detect
+    // once and disable crossfading entirely where volume can't be scripted.
+    const canFadeVolume = (() => {
+      try {
+        const probe = document.createElement("audio");
+        probe.volume = 0.45;
+        return Math.abs(probe.volume - 0.45) < 0.01;
+      } catch { return false; }
+    })();
     function cancelCrossfade() {
       if (xfadeRAF) { cancelAnimationFrame(xfadeRAF); xfadeRAF = null; }
       xfadeActive = false;
+    }
+    // Hard-stop any in-flight crossfade: silence the second deck and restore
+    // the main deck to the volume the fade started from (otherwise a fade
+    // cancelled mid-flight leaves audio.volume stuck at a partial level).
+    function stopCrossfadeNow() {
+      const wasActive = xfadeActive;
+      cancelCrossfade();
+      try { audio2.pause(); } catch {}
+      try { audio2.removeAttribute("src"); audio2.load(); } catch {}
+      audio2.volume = 0;
+      if (wasActive) audio.volume = xfadeMasterVol;
     }
     function crossfadeTo(newSrc) {
       cancelCrossfade();
       xfadeActive = true;
       const masterVol = audio.volume;
+      xfadeMasterVol = masterVol;
       audio2.src = newSrc;
       audio2.volume = 0;
       audio2.play().catch(() => {});
@@ -8504,7 +8597,7 @@
       // payload if it has loaded. Best-effort — Quick Picks works without these.
       let newAlbums = [];
       try {
-        const cached = safeParse(localStorage.getItem(CACHE_KEY), null);
+        const cached = readModulesCache();
         const raw = cached?.data?.new_albums || [];
         // Prefer albums in the user's dominant language so Quick Picks doesn't
         // sneak a random Hindi album into a Tamil-listener's grid.
@@ -8829,6 +8922,9 @@
         const npOverlay = $("nowPlayingOverlay");
         if (npOverlay && !npOverlay.classList.contains("hidden")) { started = false; return; }
         if (document.querySelector(".modal:not(.hidden)")) { started = false; return; }
+        // Horizontal shelves bleed to the screen edge — a pan starting inside
+        // one is a shelf scroll, not a back gesture.
+        if (e.target && e.target.closest && e.target.closest(".card-shelf")) { started = false; return; }
         startX = t.clientX;
         startY = t.clientY;
         started = true;
