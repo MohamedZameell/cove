@@ -9,7 +9,10 @@
   <title>Cove</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap">
+  <!-- Non-blocking font load: media="print" defers apply until onload flips it.
+       display=swap + system fallbacks mean text renders immediately either way. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" media="print" onload="this.media='all'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"></noscript>
   <style>
 
     :root {
@@ -2704,7 +2707,6 @@
       .recent-card img { width: 50px; height: 50px; }
     }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
   <!-- Boot splash: scale + accent glow. Auto-dismissed by JS after ~1.2s. -->
@@ -3371,6 +3373,12 @@
   <audio id="audio" preload="metadata"></audio>
   <audio id="audio2" preload="metadata"></audio>
 
+  <!-- Supabase SDK loads here, AFTER all UI markup, so the splash/skeleton
+       paint immediately instead of white-screening until jsdelivr responds.
+       It must stay before the main script: `sb` is created synchronously at
+       parse time from window.supabase (null-guarded, so a CDN failure only
+       disables sync, not the app). -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script>
     /* ═══════════════════════════════════════════
        ISAI — Spotify-like Music Player
@@ -4163,6 +4171,60 @@
           console.warn(`API failed (${base}):`, err.message);
           if (i === API_ENDPOINTS.length - 1) throw new Error("All APIs unavailable");
         }
+      }
+    }
+
+    // ── 24h micro-cache for slow-changing API calls (home rows) ──
+    // The personalized home fired ~8 network calls per visit even with the
+    // modules payload cached (featured-artist searches, lang-hits searches,
+    // suggestion seeds, the dead podcasts endpoint). These all change slowly,
+    // and the seeds rotate daily anyway — cache responses for a day in one
+    // LRU-capped localStorage map. Failures negative-cache so a dead endpoint
+    // is probed at most once a day instead of on every render.
+    const API_CACHE_KEY = "isai_apicache_v1";
+    const API_CACHE_MAX = 14;
+    let _apiCacheMem = null;
+    function _apiCache() {
+      if (!_apiCacheMem) _apiCacheMem = safeParse(localStorage.getItem(API_CACHE_KEY), {});
+      return _apiCacheMem;
+    }
+    function _apiCachePersist() {
+      try {
+        const m = _apiCache();
+        const keys = Object.keys(m);
+        if (keys.length > API_CACHE_MAX) {
+          keys.sort((a, b) => (m[a].ts || 0) - (m[b].ts || 0))
+            .slice(0, keys.length - API_CACHE_MAX)
+            .forEach(k => delete m[k]);
+        }
+        localStorage.setItem(API_CACHE_KEY, JSON.stringify(m));
+      } catch {
+        // Quota — it's only an optimization; drop it entirely.
+        _apiCacheMem = {};
+        try { localStorage.removeItem(API_CACHE_KEY); } catch {}
+      }
+    }
+    // Returns the parsed payload, or null on failure (callers already treat
+    // null/missing data as "row stays hidden"). Never throws.
+    async function cachedApiFetch(path, ttlMs = 24 * 3600 * 1000) {
+      const m = _apiCache();
+      const hit = m[path];
+      if (hit && Date.now() - (hit.ts || 0) < ttlMs) return hit.neg ? null : hit.data;
+      try {
+        const data = await apiFetch(path);
+        try {
+          if (JSON.stringify(data).length <= 120_000) {
+            m[path] = { ts: Date.now(), data };
+            _apiCachePersist();
+          }
+        } catch {}
+        return data;
+      } catch {
+        // Network failed: serve a stale hit if we have one, else negative-cache.
+        if (hit && !hit.neg) return hit.data;
+        m[path] = { ts: Date.now(), neg: 1 };
+        _apiCachePersist();
+        return null;
       }
     }
 
@@ -6506,7 +6568,13 @@
           // G7 stores: per-song skip suppression + daily-mix discovery cache
           localStorage.removeItem(userKey("suppressed_v1"));
           localStorage.removeItem(userKey("mixdisc_v1"));
+          // Drop the in-memory mirrors too, or the old data flushes right back.
           _suppressedCache = null;
+          _pcCache = null;
+          _tasteStore = null;
+          clearTimeout(_pcFlushT);
+          clearTimeout(_tasteFlushT);
+          if (typeof _invalidateTasteCache === "function") _invalidateTasteCache();
         } catch {}
         toast("Taste profile cleared");
       };
@@ -6516,6 +6584,8 @@
           localStorage.removeItem(MODULES_CACHE_KEY);
           localStorage.removeItem(DEAD_KEY);
           localStorage.removeItem("isai_onboard_pool_v2");
+          localStorage.removeItem(API_CACHE_KEY);
+          _apiCacheMem = null;
         } catch {}
         // Drop the in-memory module snapshot too — otherwise the next render
         // would still use the stale data even though localStorage is clean.
@@ -7835,7 +7905,7 @@
       const searchPerLang = 6;
       const fetches = await Promise.all(
         langsForArtists.map(lang =>
-          apiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=12`).catch(() => null)
+          cachedApiFetch(`/search/artists?query=${encodeURIComponent(`top ${lang} singers`)}&page=0&limit=12`)
         )
       );
       fetches.forEach(r => {
@@ -7940,7 +8010,7 @@
       // language was 2× slower for bilingual users.
       const _langResponses = await Promise.all(
         langs.map(lang =>
-          apiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=20`).catch(() => null)
+          cachedApiFetch(`/search/playlists?query=${encodeURIComponent(`top ${lang} hits`)}&limit=20`)
         )
       );
       for (let li = 0; li < langs.length; li++) {
@@ -7994,7 +8064,7 @@
       // Always English query — JioSaavn has very thin podcast catalogs in
       // regional Indian languages, so "tamil podcasts" returned junk/empty.
       // The mixed-language results from "trending podcasts" beat that for everyone.
-      const r = await apiFetch(`/search/podcasts?query=${encodeURIComponent("trending podcasts")}&limit=12`).catch(() => null);
+      const r = await cachedApiFetch(`/search/podcasts?query=${encodeURIComponent("trending podcasts")}&limit=12`);
       const raw = r?.data?.results || [];
       const items = raw
         .map(p => {
@@ -8267,11 +8337,8 @@
         seed = recent.find(s => s && s.id);
       }
       if (!seed) return;
-      let raw;
-      try {
-        const r = await apiFetch(`/songs/${encodeURIComponent(seed.id)}/suggestions`);
-        raw = Array.isArray(r?.data) ? r.data : [];
-      } catch { return; }
+      const r = await cachedApiFetch(`/songs/${encodeURIComponent(seed.id)}/suggestions`);
+      const raw = Array.isArray(r?.data) ? r.data : [];
       if (!raw.length) return;
 
       const seen = new Set([seed.id]);
@@ -8324,7 +8391,7 @@
       ]);
 
       const responses = await Promise.all(seeds.map(s =>
-        apiFetch(`/songs/${encodeURIComponent(s.id)}/suggestions`).catch(() => null)
+        cachedApiFetch(`/songs/${encodeURIComponent(s.id)}/suggestions`)
       ));
       for (const r of responses) {
         const raw = Array.isArray(r?.data) ? r.data : [];
@@ -8576,17 +8643,23 @@
     // ── PLAY COUNTS / ON REPEAT ──
     // Per-song play count keyed by song id; song meta stored alongside so the "On Repeat"
     // row can render without a separate lookup.
-    function getPlayCounts() { return safeParse(localStorage.getItem(userKey("playCounts")), {}); }
+    // Play counts are read on every song change and by several render paths.
+    // The blob can reach ~300KB at the 1000-entry cap, so parsing it out of
+    // localStorage on each read was real main-thread jank on phones. Keep it
+    // in memory (keyed by user) and flush debounced + on page hide.
     const PLAY_COUNT_CAP = 1000;
-    function incrementPlayCount(song) {
-      if (!song?.id) return;
-      const counts = getPlayCounts();
-      const existing = counts[song.id] || { count: 0 };
-      counts[song.id] = {
-        count: (existing.count || 0) + 1,
-        last: Date.now(),
-        meta: { id: song.id, title: song.title, artist: song.artist, image: song.image, src: song.src, duration: song.duration, album: song.album }
-      };
+    let _pcCache = null;
+    let _pcFlushT = null;
+    function getPlayCounts() {
+      const k = userKey("playCounts");
+      if (!_pcCache || _pcCache.k !== k) {
+        _pcCache = { k, counts: safeParse(localStorage.getItem(k), {}), dirty: false };
+      }
+      return _pcCache.counts;
+    }
+    function _flushPlayCounts() {
+      if (!_pcCache || !_pcCache.dirty) return;
+      const counts = _pcCache.counts;
       // Cap growth: when over the cap, evict lowest-count entries (ties broken by oldest last).
       const ids = Object.keys(counts);
       if (ids.length > PLAY_COUNT_CAP) {
@@ -8597,16 +8670,31 @@
         for (const e of drop) delete counts[e.id];
       }
       try {
-        localStorage.setItem(userKey("playCounts"), JSON.stringify(counts));
+        localStorage.setItem(_pcCache.k, JSON.stringify(counts));
+        _pcCache.dirty = false;
       } catch (err) {
-        // Quota exceeded — drop half and retry once
+        // Quota exceeded — drop half and retry once (memory mirrors disk)
         const halved = Object.fromEntries(
           Object.entries(counts)
             .sort((a, b) => (b[1].count - a[1].count) || ((b[1].last || 0) - (a[1].last || 0)))
             .slice(0, Math.floor(PLAY_COUNT_CAP / 2))
         );
-        try { localStorage.setItem(userKey("playCounts"), JSON.stringify(halved)); } catch {}
+        _pcCache.counts = halved;
+        try { localStorage.setItem(_pcCache.k, JSON.stringify(halved)); _pcCache.dirty = false; } catch {}
       }
+    }
+    function incrementPlayCount(song) {
+      if (!song?.id) return;
+      const counts = getPlayCounts();
+      const existing = counts[song.id] || { count: 0 };
+      counts[song.id] = {
+        count: (existing.count || 0) + 1,
+        last: Date.now(),
+        meta: { id: song.id, title: song.title, artist: song.artist, image: song.image, src: song.src, duration: song.duration, album: song.album }
+      };
+      _pcCache.dirty = true;
+      clearTimeout(_pcFlushT);
+      _pcFlushT = setTimeout(_flushPlayCounts, 1200);
     }
     function getTopPlayed(limit = 8) {
       const counts = getPlayCounts();
@@ -8634,16 +8722,44 @@
     const TASTE_RICH_THRESHOLD = 10; // total plays before we trust the profile
 
     function tasteKey() { return userKey("taste"); }
+    // Same in-memory + debounced-flush pattern as play counts: recordTaste /
+    // recordModuleImpression fire 10+ times during a single home render, and
+    // each used to parse + stringify + write the whole taste blob.
+    let _tasteStore = null;
+    let _tasteFlushT = null;
     function loadTaste() {
-      return safeParse(localStorage.getItem(tasteKey()), null) || {
-        artists: {}, langs: {}, modules: {}, plays: 0, skips: 0, createdAt: Date.now()
-      };
+      const k = tasteKey();
+      if (!_tasteStore || _tasteStore.k !== k) {
+        _tasteStore = {
+          k,
+          t: safeParse(localStorage.getItem(k), null) || {
+            artists: {}, langs: {}, modules: {}, plays: 0, skips: 0, createdAt: Date.now()
+          }
+        };
+      }
+      return _tasteStore.t;
+    }
+    function _flushTaste() {
+      if (!_tasteStore) return;
+      try { localStorage.setItem(_tasteStore.k, JSON.stringify(_tasteStore.t)); } catch {}
     }
     function saveTaste(t) {
-      try { localStorage.setItem(tasteKey(), JSON.stringify(t)); } catch {}
+      _tasteStore = { k: tasteKey(), t };
+      clearTimeout(_tasteFlushT);
+      _tasteFlushT = setTimeout(_flushTaste, 800);
       // Invalidate the getTasteProfile memo so the next read sees fresh data.
       if (typeof _invalidateTasteCache === "function") _invalidateTasteCache();
     }
+    // iOS PWAs are killed without beforeunload — pagehide/visibility-hidden are
+    // the reliable moments to persist the in-memory stores.
+    function _flushHotStores() {
+      try { _flushPlayCounts(); } catch {}
+      try { _flushTaste(); } catch {}
+    }
+    addEventListener("pagehide", _flushHotStores);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") _flushHotStores();
+    });
     // Apply exp(-Δdays / τ) decay so old plays fade. Returns current effective score.
     function _tasteDecayed(entry) {
       if (!entry || !entry.last) return entry?.score || 0;
@@ -9807,15 +9923,33 @@
       scroller.addEventListener("touchcancel", finish, { passive: true });
     })();
 
-    // ── Boot splash dismiss ──
-    // Animation runs ~1.1s; let it play, fade the overlay, then remove from DOM.
+    // ── Boot splash dismiss (adaptive) ──
+    // Used to hold a fixed 1.7s on every open. Now: a 600ms minimum brand
+    // beat, then dismiss as soon as the homepage (or error state) has painted,
+    // hard cap 1.5s. With the modules cache, a warm boot shows content ~1s
+    // sooner than before.
     (function dismissSplash() {
       const el = document.getElementById("splash");
       if (!el) return;
       // Skip on reduced motion (CSS already hides it via display:none)
       if (matchMedia("(prefers-reduced-motion: reduce)").matches) { el.remove(); return; }
-      setTimeout(() => el.classList.add("hidden"), 1150);
-      setTimeout(() => el.remove(), 1700);
+      const start = performance.now();
+      const ready = () => {
+        const home = document.getElementById("homeContent");
+        const err = document.getElementById("errorState");
+        return (home && !home.classList.contains("hidden"))
+            || (err && !err.classList.contains("hidden"));
+      };
+      const tick = () => {
+        const elapsed = performance.now() - start;
+        if (elapsed >= 1500 || ready()) {
+          el.classList.add("hidden");
+          setTimeout(() => el.remove(), 450);
+        } else {
+          setTimeout(tick, 100);
+        }
+      };
+      setTimeout(tick, 600);
     })();
 
     // ── A1: lazy + decoding-async on every dynamic <img> ──
@@ -9887,6 +10021,15 @@
         if (typeof recordModuleReward === "function") recordModuleReward(sec.dataset.moduleKey, 1);
       }, true);
     })();
+
+    // ── Service worker: app-shell caching ──
+    // Instant repeat boots + offline shell. Guarded to http(s) so the
+    // Capacitor APK shell (file:// / capacitor://) skips registration.
+    if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+      addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch(() => {});
+      });
+    }
 
     // ── INIT ──
     (async () => {
