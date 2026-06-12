@@ -5154,6 +5154,16 @@
         openModal(dom.authModal, dom.emailInput);
         return;
       }
+      // G7: completion bonus for the outgoing track — playing ≥85% through is a
+      // strong positive signal. playSongAt is the single transition point, so
+      // this fires exactly once per track change (incl. natural end → skipNext).
+      try {
+        if (audio.duration > 0 && audio.currentTime / audio.duration >= 0.85) {
+          const out = currentSong();
+          if (out && typeof recordTaste === "function") recordTaste("finish", out);
+        }
+      } catch {}
+
       const prevSrc = audio.dataset.blobUrl || "";
       if (prevSrc) URL.revokeObjectURL(prevSrc);
 
@@ -5269,7 +5279,16 @@
       try {
         if (!audio.ended && audio.currentTime > 0 && audio.currentTime < 30) {
           const cur = currentSong();
-          if (cur && typeof recordTaste === "function") recordTaste("skip", cur);
+          if (cur) {
+            // G7: two skips of the same song → suppressed from reco rows for 30d.
+            if (typeof bumpSkipSuppression === "function") bumpSkipSuppression(cur.id);
+            // G7: cap the artist-score penalty at 3 skips per artist per session —
+            // preview-hopping through a loved artist's album shouldn't tank them.
+            const ak = (cur.artist || "").split(",")[0].trim().toLowerCase();
+            state._skipTally = state._skipTally || {};
+            state._skipTally[ak] = (state._skipTally[ak] || 0) + 1;
+            if (state._skipTally[ak] <= 3 && typeof recordTaste === "function") recordTaste("skip", cur);
+          }
         }
       } catch {}
       if (!force && state.repeatMode === "one") { audio.currentTime = 0; audio.play(); return; }
@@ -5304,19 +5323,62 @@
       if (_suggestInflight) return _suggestInflight;
       _suggestInflight = (async () => {
         try {
-          const r = await apiFetch(`/songs/${encodeURIComponent(seed.id)}/suggestions`);
-          const raw = Array.isArray(r?.data) ? r.data : [];
-          if (!raw.length) return 0;
+          // G7 radio quality:
+          //  - blends suggestions for the CURRENT song with suggestions for a
+          //    daily taste-pool seed, so radio reflects your taste, not just
+          //    wherever the last suggestion chain drifted
+          //  - language filter: drops songs outside your dominant languages
+          //    (with a starvation guard so radio never dies)
+          //  - dedupes against queue + recents + this session's radio history
+          //  - drops suppressed (twice-skipped) songs
+          state._radioHistory = state._radioHistory || new Set();
+          const alt = (typeof pickDailySeeds === "function" ? pickDailySeeds(2, "radio") : [])
+            .filter(s => s && s.id !== seed.id)[0];
+          const fetches = [apiFetch(`/songs/${encodeURIComponent(seed.id)}/suggestions`).catch(() => null)];
+          if (alt) fetches.push(apiFetch(`/songs/${encodeURIComponent(alt.id)}/suggestions`).catch(() => null));
+          const responses = await Promise.all(fetches);
+          const lists = responses.map(r => Array.isArray(r?.data) ? r.data : []);
+          if (!lists.some(l => l.length)) return 0;
+
+          // Language allowlist: langs holding ≥15% of the dominant share.
+          const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
+          let allowedLangs = null;
+          if (profile?.isRich && profile.dominantLangs?.length) {
+            const top = profile.dominantLangs[0].score || 0;
+            allowedLangs = new Set(
+              profile.dominantLangs.filter(d => top > 0 && d.score / top >= 0.15).map(d => d.lang)
+            );
+          } else if (state.userLangs && state.userLangs.length) {
+            allowedLangs = new Set(state.userLangs);
+          }
+
           const seen = new Set(state.currentQueue.map(s => s.id));
-          const fresh = [];
-          for (const item of raw) {
+          getRecentlyPlayed().forEach(s => seen.add(s.id));
+          state._radioHistory.forEach(id => seen.add(id));
+
+          // Interleave both lists so both flavors land near the top.
+          const merged = [];
+          const maxLen = Math.max(...lists.map(l => l.length));
+          for (let i = 0; i < maxLen; i++) for (const l of lists) { if (l[i]) merged.push(l[i]); }
+
+          const fresh = [], offLang = [];
+          for (const item of merged) {
             const n = normalizeSong(item);
             if (!n.id || !n.src || seen.has(n.id)) continue;
+            if (typeof isSuppressed === "function" && isSuppressed(n.id)) continue;
             seen.add(n.id);
-            fresh.push(enrichSong(n));
+            const langOk = !allowedLangs || !n.language || allowedLangs.has(n.language);
+            (langOk ? fresh : offLang).push(enrichSong(n));
             if (fresh.length >= 15) break;
           }
+          // Starvation guard: if the language filter ate nearly everything,
+          // backfill with off-language picks rather than stalling the radio.
+          while (fresh.length < 5 && offLang.length) fresh.push(offLang.shift());
           if (!fresh.length) return 0;
+          fresh.forEach(s => state._radioHistory.add(s.id));
+          if (state._radioHistory.size > 500) {
+            state._radioHistory = new Set(Array.from(state._radioHistory).slice(-250));
+          }
           state.currentQueue.push(...fresh);
           if (state.currentPage === "queue") renderQueueWithDrag();
           return fresh.length;
@@ -6458,6 +6520,10 @@
         try {
           localStorage.removeItem(userKey("taste"));
           localStorage.removeItem(userKey("playCounts"));
+          // G7 stores: per-song skip suppression + daily-mix discovery cache
+          localStorage.removeItem(userKey("suppressed_v1"));
+          localStorage.removeItem(userKey("mixdisc_v1"));
+          _suppressedCache = null;
         } catch {}
         toast("Taste profile cleared");
       };
@@ -7732,6 +7798,11 @@
       renderLangTrendingRow().catch(() => {});
       loadFeaturedArtistsRow(data).catch(() => {});
       renderPodcastsRow().catch(() => {});
+      // G7: refresh Daily Mix discovery once per day; refill the row in place
+      // when new picks land (subtitle flips to "{artist} & more").
+      if (typeof refreshDailyMixDiscovery === "function") {
+        refreshDailyMixDiscovery().then(changed => { if (changed) renderDailyMixes(); }).catch(() => {});
+      }
     }
 
     // ── Home section shells ──
@@ -7762,6 +7833,11 @@
       cards.forEach(c => shelf.appendChild(c));
       el.appendChild(shelf);
       el.classList.remove("hidden");
+      // G7 metrics: every filled row logs an impression under its key; clicks
+      // are credited via the existing #homeSections [data-module-key] delegation.
+      // Per-row CTR is inspectable via cove.taste().raw.modules.
+      el.dataset.moduleKey = key;
+      if (typeof recordModuleImpression === "function") recordModuleImpression(key);
       return el;
     }
 
@@ -7813,12 +7889,7 @@
       }
       const items = Array.from(artistById.values()).filter(a => a.image).slice(0, 12);
       if (items.length < 4) { fillHomeShell("featured_artists", "", []); return; }
-      const el = fillHomeShell("featured_artists", "Featured Artists", items.map(a => renderHomeCard(a)));
-      // Keep the UCB1 bandit fed — this row was a ranked module before.
-      if (el) {
-        el.dataset.moduleKey = "featured_artists";
-        if (typeof recordModuleImpression === "function") recordModuleImpression("featured_artists");
-      }
+      fillHomeShell("featured_artists", "Featured Artists", items.map(a => renderHomeCard(a)));
     }
 
     // G2 + #6: "Top {lang} Hits" — one row per dominant language with >=25%
@@ -7924,6 +7995,11 @@
         block.appendChild(shelf);
         zone.appendChild(block);
         zone.classList.remove("hidden");
+      }
+      // G7 metrics: one impression for the whole zone when it rendered anything.
+      if (zone.children.length) {
+        zone.dataset.moduleKey = "lang_trending";
+        if (typeof recordModuleImpression === "function") recordModuleImpression("lang_trending");
       }
     }
 
@@ -8068,8 +8144,8 @@
     }
 
     // Cluster the user's library by primary artist; surface up to 3 sizable clusters.
-    // Pool = favorites + top-played + recents, deduped. Each mix needs >=4 songs.
-    function buildDailyMixes() {
+    // Pool = favorites + top-played + recents, deduped. Each cluster needs >=4 songs.
+    function buildDailyMixClusters() {
       const pool = [];
       const seen = new Set();
       const push = (s) => { if (s?.id && !seen.has(s.id)) { seen.add(s.id); pool.push(s); } };
@@ -8089,15 +8165,85 @@
       return Array.from(byArtist.values())
         .filter(c => c.songs.length >= 4)
         .sort((a, b) => b.songs.length - a.songs.length)
-        .slice(0, 3)
-        .map((c, i) => ({
+        .slice(0, 3);
+    }
+
+    // G7: Daily Mixes are now real mixes — ~2/3 songs you know + ~1/3 adjacent
+    // discovery from /suggestions (Spotify's Daily Mix recipe). Discovery picks
+    // come from refreshDailyMixDiscovery's once-a-day cache; until the first
+    // fetch lands the mix is library-only, exactly like before (no regression).
+    function buildDailyMixes() {
+      const clusters = buildDailyMixClusters();
+      if (!clusters.length) return [];
+      const disc = safeParse(localStorage.getItem(userKey("mixdisc_v1")), null);
+      const discMap = (disc && disc.byArtist) || {};
+      return clusters.map((c, i) => {
+        // Date-stable shuffle of the known songs so the 30-song cap rotates daily.
+        const rng = dailyRng("mixorder:" + c.name);
+        const known = c.songs.slice();
+        for (let j = known.length - 1; j > 0; j--) {
+          const k = Math.floor(rng() * (j + 1));
+          [known[j], known[k]] = [known[k], known[j]];
+        }
+        const discovery = (discMap[c.name.toLowerCase()] || [])
+          .filter(s => s && s.id && !(typeof isSuppressed === "function" && isSuppressed(s.id)))
+          .map(enrichSong);
+        // Weave 2 known : 1 discovery, capped at 30 total.
+        const songs = [];
+        let ki = 0, di = 0;
+        while (songs.length < 30 && (ki < known.length || di < discovery.length)) {
+          if (ki < known.length) songs.push(known[ki++]);
+          if (songs.length < 30 && ki < known.length) songs.push(known[ki++]);
+          if (songs.length < 30 && di < discovery.length) songs.push(discovery[di++]);
+        }
+        return {
           id: `mix:${c.name}`,
           type: "mix",
           title: `Daily Mix ${i + 1}`,
-          subtitle: c.name,
+          subtitle: discovery.length ? `${c.name} & more` : c.name,
           image: c.songs.find(s => s.image)?.image || "",
-          songs: c.songs.slice(0, 30)
-        }));
+          songs
+        };
+      });
+    }
+
+    // Once per day: fetch suggestion-based discovery for each mix cluster
+    // (2 seeds per cluster — its top song + a date-random member; ≤6 API calls,
+    // cached in localStorage). Resolves true when fresh data landed so callers
+    // can refill the row in place.
+    async function refreshDailyMixDiscovery() {
+      const day = new Date().toISOString().slice(0, 10);
+      const cached = safeParse(localStorage.getItem(userKey("mixdisc_v1")), null);
+      if (cached && cached.day === day) return false;
+      const clusters = buildDailyMixClusters();
+      if (!clusters.length) return false;
+      const byArtist = {};
+      await Promise.all(clusters.map(async (c) => {
+        const rng = dailyRng("mixdisc:" + c.name);
+        const seeds = [c.songs[0]];
+        if (c.songs.length > 1) seeds.push(c.songs[1 + Math.floor(rng() * (c.songs.length - 1))]);
+        const res = await Promise.all(seeds.filter(Boolean).map(s =>
+          apiFetch(`/songs/${encodeURIComponent(s.id)}/suggestions`).catch(() => null)
+        ));
+        const ids = new Set(c.songs.map(s => s.id));
+        const out = [];
+        for (const r of res) {
+          for (const item of (Array.isArray(r?.data) ? r.data : [])) {
+            const n = normalizeSong(item);
+            if (!n.id || !n.src || ids.has(n.id)) continue;
+            if (typeof isSuppressed === "function" && isSuppressed(n.id)) continue;
+            ids.add(n.id);
+            out.push(n);
+            if (out.length >= 12) break;
+          }
+          if (out.length >= 12) break;
+        }
+        if (out.length) byArtist[c.name.toLowerCase()] = out;
+      }));
+      try {
+        localStorage.setItem(userKey("mixdisc_v1"), JSON.stringify({ day, byArtist }));
+      } catch {}
+      return Object.keys(byArtist).length > 0;
     }
 
     function renderDailyMixes() {
@@ -8120,11 +8266,18 @@
     // recent play, so the row doesn't whiplash with every new track.
     async function loadMoreLikeThis() {
       let seed = null;
-      // Top-played first — getTopPlayed returns full song meta sorted by count
+      // G7: sample the daily seed pool (favorites + top-played + recents,
+      // weighted, date-seeded) so the row rotates instead of fossilizing on
+      // the single most-played song.
       try {
-        const top = (typeof getTopPlayed === "function") ? getTopPlayed(1) : [];
-        if (top[0]?.id) seed = top[0];
+        if (typeof pickDailySeeds === "function") seed = pickDailySeeds(1, "morelike")[0] || null;
       } catch {}
+      if (!seed) {
+        try {
+          const top = (typeof getTopPlayed === "function") ? getTopPlayed(1) : [];
+          if (top[0]?.id) seed = top[0];
+        } catch {}
+      }
       if (!seed) {
         const recent = getRecentlyPlayed();
         seed = recent.find(s => s && s.id);
@@ -8142,6 +8295,7 @@
       for (const item of raw) {
         const n = normalizeSong(item);
         if (!n.id || !n.src || seen.has(n.id)) continue;
+        if (typeof isSuppressed === "function" && isSuppressed(n.id)) continue;
         seen.add(n.id);
         songs.push(enrichSong(n));
         if (songs.length >= 12) break;
@@ -8169,8 +8323,13 @@
     async function loadSimilarArtistsRow() {
       const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
       if (!profile || !profile.isRich) return;
-      // Pick up to 3 seed songs from top-played; widens the suggestion pool.
-      const seeds = (typeof getTopPlayed === "function") ? getTopPlayed(3) : [];
+      // G7: up to 3 daily-rotating seeds from the taste pool (was: fixed top-3
+      // played, which made this row nearly static). Falls back to top-played.
+      let seeds = [];
+      try {
+        if (typeof pickDailySeeds === "function") seeds = pickDailySeeds(3, "simartists");
+      } catch {}
+      if (!seeds.length && typeof getTopPlayed === "function") seeds = getTopPlayed(3);
       if (!seeds.length) return;
 
       // Tally artists across all suggestion responses.
@@ -8484,9 +8643,10 @@
     // Weight conventions cribbed from Spotify/JioSaavn implicit-feedback literature:
     //   stream (>30s)  +5     save  +10    share +15    repeat-in-24h +8
     //   click           +1    skip <30s -2.5 (floor 0)
+    //   finish ≥85%     +3    (G7: graded counterpart to the skip penalty)
     // ══════════════════════════════════════════════════════════════════════════
     const TASTE_TAU_DAYS = 30;
-    const TASTE_W = { play: 5, click: 1, save: 10, share: 15, skip: -2.5, repeat: 8 };
+    const TASTE_W = { play: 5, click: 1, save: 10, share: 15, skip: -2.5, repeat: 8, finish: 3 };
     const TASTE_RICH_THRESHOLD = 10; // total plays before we trust the profile
 
     function tasteKey() { return userKey("taste"); }
@@ -8580,6 +8740,98 @@
     }
     // Debug helper — paste `cove.taste()` in the console to inspect.
     if (typeof window !== "undefined") window.cove = Object.assign(window.cove || {}, { taste: getTasteProfile });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ── G7: RECOMMENDATION QUALITY ──
+    // Daily-rotating weighted seeds (kills row staleness), per-song skip
+    // suppression, and a deterministic per-day PRNG so rows are stable within
+    // a day but fresh tomorrow.
+    // ══════════════════════════════════════════════════════════════════════════
+    function _hashStr(s) {
+      let h = 2166136261;
+      for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+      return h >>> 0;
+    }
+    // mulberry32 seeded from (user, calendar day, salt) — same sequence all day.
+    function dailyRng(salt) {
+      const day = new Date().toISOString().slice(0, 10);
+      let a = _hashStr(`${userKey("seed")}|${day}|${salt}`) || 1;
+      return function () {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    // Weighted seed pool: favorites (strongest), top-played, recents. The
+    // personalized rows sample from this instead of fossilizing on the single
+    // most-played song.
+    function getSeedPool() {
+      const pool = new Map(); // id -> {song, w}
+      const add = (s, w) => {
+        if (!s?.id) return;
+        const cur = pool.get(s.id);
+        if (cur) cur.w += w; else pool.set(s.id, { song: s, w });
+      };
+      (state.favorites || []).forEach(f => add(f.song, 3));
+      getTopPlayed(15).forEach((s, i) => add(s, 2 + Math.max(0, 10 - i) * 0.3));
+      getRecentlyPlayed().slice(0, 12).forEach(s => add(s, 2));
+      return Array.from(pool.values());
+    }
+    // Pick k distinct seeds, weighted, deterministic per (day, salt).
+    function pickDailySeeds(k, salt) {
+      const pool = getSeedPool().filter(e => !isSuppressed(e.song.id));
+      const rng = dailyRng(salt);
+      const out = [];
+      while (out.length < k && pool.length) {
+        const total = pool.reduce((s, e) => s + e.w, 0);
+        let r = rng() * total;
+        let idx = 0;
+        for (; idx < pool.length - 1; idx++) { r -= pool[idx].w; if (r <= 0) break; }
+        out.push(pool.splice(idx, 1)[0].song);
+      }
+      return out;
+    }
+
+    // ── Per-song suppression: skipped twice → hidden from reco rows for 30d ──
+    // (Doesn't touch the user's own library/recents — only recommendation rows,
+    // radio and daily-mix discovery.)
+    const SUPPRESS_AFTER_SKIPS = 2;
+    const SUPPRESS_DAYS = 30;
+    let _suppressedCache = null;
+    function _loadSuppressed() {
+      const k = userKey("suppressed_v1");
+      if (!_suppressedCache || _suppressedCache.k !== k) {
+        _suppressedCache = { k, map: safeParse(localStorage.getItem(k), {}) };
+      }
+      return _suppressedCache.map;
+    }
+    function bumpSkipSuppression(songId) {
+      if (!songId) return;
+      try {
+        const map = _loadSuppressed();
+        const now = Date.now();
+        for (const id of Object.keys(map)) {
+          if (now - (map[id].ts || 0) > SUPPRESS_DAYS * 86_400_000) delete map[id];
+        }
+        const cur = map[songId] || { n: 0, ts: 0 };
+        cur.n += 1; cur.ts = now;
+        map[songId] = cur;
+        const keys = Object.keys(map);
+        if (keys.length > 300) {
+          keys.sort((a, b) => (map[a].ts || 0) - (map[b].ts || 0))
+            .slice(0, keys.length - 300).forEach(id => delete map[id]);
+        }
+        localStorage.setItem(userKey("suppressed_v1"), JSON.stringify(map));
+      } catch {}
+    }
+    function isSuppressed(songId) {
+      if (!songId) return false;
+      const e = _loadSuppressed()[songId];
+      if (!e) return false;
+      return e.n >= SUPPRESS_AFTER_SKIPS && (Date.now() - (e.ts || 0)) < SUPPRESS_DAYS * 86_400_000;
+    }
 
     // Quick Picks — Spotify-style mixed grid replacing the single-card hero.
     // Pulls from three pools (recent songs / daily mixes / new albums) and pads
