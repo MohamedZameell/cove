@@ -3118,6 +3118,13 @@
           <h3 class="settings-section-title">Library</h3>
           <div class="settings-row">
             <div class="settings-row-label">
+              <div class="settings-row-title">Smart downloads</div>
+              <div class="settings-row-sub">Keep your top 20 liked &amp; most-played songs offline automatically.</div>
+            </div>
+            <label class="settings-toggle"><input type="checkbox" id="settingsSmartDl"><span class="settings-toggle-track"></span></label>
+          </div>
+          <div class="settings-row">
+            <div class="settings-row-label">
               <div class="settings-row-title">Re-pick languages &amp; artists</div>
               <div class="settings-row-sub">Run onboarding again to choose a fresh seed.</div>
             </div>
@@ -5391,7 +5398,9 @@
       // Smart Radio: keep at least 5 songs queued ahead of the current index.
       if (state.radioMode) {
         const remaining = state.currentQueue.length - state.currentIndex - 1;
-        if (remaining < 5) appendSuggestionsToQueue(song).catch(() => {});
+        // Re-arm the gapless preload once suggestions land — if we were at the
+        // queue tail, the "next" track only exists after the append.
+        if (remaining < 5) appendSuggestionsToQueue(song).then(n => { if (n > 0) schedulePreloadNext(); }).catch(() => {});
       }
 
       // Fetch lyrics
@@ -5415,6 +5424,41 @@
         try { navigator.mediaSession.setActionHandler("seekforward", null); } catch {}
       }
       persistSettings({ last_song_id: song.id, last_song: song });
+
+      // Gapless: start pre-resolving + buffering the next track once this one
+      // is safely playing.
+      schedulePreloadNext();
+    }
+
+    // ── GAPLESS: PRELOAD NEXT TRACK ──
+    // iOS can't crossfade (no scriptable volume), so every track change used
+    // to pay a resolve-API roundtrip + cold CDN fetch — an audible gap. Once
+    // the current track is playing, pre-resolve the NEXT queue song's src
+    // (resolveSource mutates song.src in place, so the switch-time call
+    // returns instantly) and warm the CDN fetch through the idle crossfade
+    // deck. stopCrossfadeNow may clear the deck buffer on switch, but the
+    // bytes stay in the HTTP cache either way.
+    let _preloadT = null;
+    function schedulePreloadNext() {
+      clearTimeout(_preloadT);
+      // 2s delay: don't compete with the current track's own initial buffering.
+      _preloadT = setTimeout(async () => {
+        try {
+          const next = state.currentQueue?.[state.currentIndex + 1];
+          if (!next || next.localBlobKey) return; // queue end / already local
+          const src = await resolveSource(next);
+          if (!src || src.startsWith("blob:")) return;
+          // Bail if the user jumped elsewhere while we resolved, or the
+          // second deck went busy with a real crossfade.
+          if (state.currentQueue?.[state.currentIndex + 1]?.id !== next.id) return;
+          if (xfadeActive) return;
+          if (audio2.src !== src) {
+            audio2.preload = "auto";
+            audio2.src = src;
+            audio2.load();
+          }
+        } catch {}
+      }, 2000);
     }
 
     function updatePlayBtn(playing) {
@@ -5863,6 +5907,8 @@
         pushFavoriteToCloud({ song_id: song.id, song });
         // G1: save is a strong positive signal (+10 per artist+lang)
         recordTaste("save", song);
+        // New favorite → refresh the smart-download set soon.
+        if (typeof scheduleSmartDownloads === "function") scheduleSmartDownloads(6000);
       }
       saveFavorites();
       updateNowFav();
@@ -5880,6 +5926,24 @@
     }
 
     // ── DOWNLOADS ──
+    // Try fetch first, fall back to XHR (handles some CORS/redirect cases better).
+    async function fetchTrackBlob(src) {
+      try {
+        const r = await fetch(src, { mode: "cors" });
+        if (!r.ok) throw new Error();
+        return await r.blob();
+      } catch {
+        return await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", src, true);
+          xhr.responseType = "blob";
+          xhr.onload = () => xhr.status === 200 ? resolve(xhr.response) : reject();
+          xhr.onerror = reject;
+          xhr.send();
+        });
+      }
+    }
+
     async function toggleDownload(song) {
       const exists = state.downloads.find(d => d.id === song.id);
       if (exists) {
@@ -5890,25 +5954,10 @@
       } else {
         toast("Downloading...");
         try {
-          // Try fetch first, fall back to XHR for CORS issues
-          let blob;
-          try {
-            const r = await fetch(song.src, { mode: "cors" });
-            if (!r.ok) throw new Error();
-            blob = await r.blob();
-          } catch {
-            // Fallback: use XMLHttpRequest which handles redirects better
-            blob = await new Promise((resolve, reject) => {
-              const xhr = new XMLHttpRequest();
-              xhr.open("GET", song.src, true);
-              xhr.responseType = "blob";
-              xhr.onload = () => xhr.status === 200 ? resolve(xhr.response) : reject();
-              xhr.onerror = reject;
-              xhr.send();
-            });
-          }
+          const blob = await fetchTrackBlob(song.src);
           const key = `track-${song.id}`;
           await putBlob(key, blob);
+          // Manual download — clears any smart flag so eviction never touches it.
           state.downloads.unshift({ ...song, blobKey: key });
           saveDlMeta();
           toast("Downloaded!");
@@ -5917,6 +5966,78 @@
       refreshActiveSongRows();
       if (state.currentPage === "downloads") renderDownloads();
     }
+
+    // ── SMART DOWNLOADS ──
+    // Auto-cache the user's top songs (recent favorites + most-played) so
+    // playback survives offline stretches and flaky mobile data. Runs quietly
+    // in the background after boot / when a favorite is added / on reconnect.
+    // Smart entries carry `smart: true` and are evicted when they fall off
+    // the top list; manual downloads are never touched. Cap keeps IndexedDB
+    // usage around ~80MB worst case.
+    const SMART_DL_CAP = 20;
+    function smartDlEnabled() {
+      try { return localStorage.getItem(PREF.smartDl) !== "0"; } catch { return true; }
+    }
+    let _smartDlRunning = false;
+    async function runSmartDownloads() {
+      if (_smartDlRunning || !smartDlEnabled() || !state.user || !navigator.onLine) return;
+      _smartDlRunning = true;
+      try {
+        // Candidates: recent favorites lead, then most-played (≥3 plays).
+        const cand = []; const seen = new Set();
+        for (const f of (state.favorites || []).slice(0, 12)) {
+          const s = f.song;
+          if (s?.id && !seen.has(s.id)) { seen.add(s.id); cand.push(s); }
+        }
+        try {
+          Object.values(getPlayCounts())
+            .filter(e => e?.meta?.id && (e.count || 0) >= 3)
+            .sort((a, b) => (b.count || 0) - (a.count || 0))
+            .slice(0, 12)
+            .forEach(e => { if (!seen.has(e.meta.id)) { seen.add(e.meta.id); cand.push(e.meta); } });
+        } catch {}
+        const want = cand.slice(0, SMART_DL_CAP);
+        const wantIds = new Set(want.map(s => s.id));
+        // Evict smart entries that fell off the list.
+        const stale = state.downloads.filter(d => d.smart && !wantIds.has(d.id));
+        for (const d of stale) {
+          try { await delBlob(d.blobKey); } catch {}
+          state.downloads = state.downloads.filter(x => x.id !== d.id);
+        }
+        if (stale.length) saveDlMeta();
+        // Fetch missing ones one at a time; stop on first failure (likely offline).
+        for (const s of want) {
+          if (!smartDlEnabled() || !navigator.onLine) break;
+          if (isDl(s.id)) continue;
+          try {
+            const src = await resolveSource(s);
+            if (!src || src.startsWith("blob:")) continue;
+            const blob = await fetchTrackBlob(src);
+            const key = `track-${s.id}`;
+            await putBlob(key, blob);
+            state.downloads.unshift({ ...s, src, blobKey: key, smart: true });
+            saveDlMeta();
+          } catch { break; }
+          // Breathe between tracks — don't hog bandwidth from active playback.
+          await new Promise(r => setTimeout(r, 500));
+        }
+        refreshActiveSongRows();
+        if (state.currentPage === "downloads") renderDownloads();
+      } finally { _smartDlRunning = false; }
+    }
+    let _smartDlT = null; let _smartDlBootTries = 0;
+    function scheduleSmartDownloads(delayMs = 12000) {
+      clearTimeout(_smartDlT);
+      _smartDlT = setTimeout(() => {
+        // Auth restore is async — retry a few times if the user isn't in yet.
+        if (!state.user && _smartDlBootTries < 4) { _smartDlBootTries++; scheduleSmartDownloads(20000); return; }
+        runSmartDownloads().catch(() => {});
+      }, delayMs);
+    }
+    // Boot trigger (15s in, so it never competes with first paint / first play)
+    // + refresh when connectivity returns.
+    scheduleSmartDownloads(15000);
+    window.addEventListener("online", () => scheduleSmartDownloads(8000));
 
     // ── PLAYLISTS ──
     function createPlaylist(name) {
@@ -6588,7 +6709,8 @@
       qualityBadge: "isai_pref_quality_badge", // "1" | "0"
       smartRadio:   "isai_pref_smart_radio", // "1" | "0" — default 0 (already off in state)
       autoQueue:    "isai_pref_auto_queue",  // "1" | "0" — default 1
-      crossfade:    "isai_pref_crossfade"    // "1" | "0" — default 1
+      crossfade:    "isai_pref_crossfade",   // "1" | "0" — default 1
+      smartDl:      "isai_pref_smart_dl"     // "1" | "0" — default 1
     };
 
     function getAudioQualityPref() {
@@ -6658,6 +6780,12 @@
         (v, readOnly) => { if (!readOnly) state.autoQueueEnabled = !!v; return state.autoQueueEnabled !== false; }, "Auto-queue");
       wireToggle("settingsCrossfade", PREF.crossfade,
         (v, readOnly) => { if (!readOnly) state.crossfade = !!v; return state.crossfade !== false; }, "Crossfade");
+      wireToggle("settingsSmartDl", PREF.smartDl,
+        (v, readOnly) => {
+          if (readOnly) return smartDlEnabled();
+          if (v) scheduleSmartDownloads(1500); // kick off right away on enable
+          return !!v;
+        }, "Smart downloads");
       wireToggle("settingsQualityBadge", PREF.qualityBadge,
         (v, readOnly) => {
           if (readOnly) return getQualityBadgePref();
