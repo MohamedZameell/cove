@@ -908,17 +908,39 @@
     /* Genre banners are landscape — wider columns */
     .card-shelf--wide { grid-auto-columns: 250px; }
 
+    /* Shelf paging arrows — desktop only, revealed on section hover.
+       Touch devices scroll shelves directly; arrows would be noise. */
+    .shelf-nav { display: none; gap: 6px; align-self: center; }
+    @media (hover: hover) and (pointer: fine) {
+      .shelf-nav { display: inline-flex; }
+    }
+    .shelf-nav button {
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: transparent; color: var(--text-sub);
+      display: inline-flex; align-items: center; justify-content: center;
+      cursor: pointer; opacity: 0;
+      transition: opacity 0.15s, color 0.15s, border-color 0.15s, background-color 0.15s;
+    }
+    .home-section:hover .shelf-nav button,
+    .shelf-nav button:focus-visible { opacity: 1; }
+    .shelf-nav button:hover { color: var(--text); border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.06); }
+    .shelf-nav svg { width: 14px; height: 14px; fill: currentColor; }
+
     .card {
       background: var(--bg-card);
+      /* Hairline border gives cards crisp definition against the near-black bg */
+      border: 1px solid rgba(255,255,255,0.045);
       border-radius: var(--radius-md);
       padding: 16px;
-      transition: transform 0.2s ease-out, box-shadow 0.2s ease-out, background 0.2s;
+      transition: transform 0.2s ease-out, box-shadow 0.2s ease-out, background 0.2s, border-color 0.2s;
       cursor: pointer;
       position: relative;
     }
 
     .card:hover {
       background: var(--bg-card-hover);
+      border-color: rgba(255,255,255,0.09);
       transform: translateY(-4px);
       box-shadow: 0 12px 32px rgba(0,0,0,0.4);
     }
@@ -2846,6 +2868,7 @@
       <!-- HOME PAGE -->
       <section id="homePage" class="page active">
         <div id="homeGreeting" style="padding:24px 0 8px;">
+          <p id="greetingDate" style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.14em;color:var(--text-sub);margin:0 0 6px;"></p>
           <h2 style="font-size:1.8rem;font-weight:800;letter-spacing:-0.03em;" id="greetingText">Good evening</h2>
         </div>
 
@@ -4334,18 +4357,35 @@
         if (!usedSong.has(s.id)) { songsRaw.push(s); usedSong.add(s.id); }
       }
 
-      // Re-rank by user's preferred languages from geolocation. Stable partition: songs
-      // matching the highest-priority language float to the top while preserving the
-      // autocomplete order within each language tier. Songs with no language match keep
-      // their relative order at the bottom.
+      // Re-rank by preferred language (stable partition) + personal taste boost.
+      // Taste: songs by artists the user actually plays jump up within their language
+      // tier — stronger on short queries, where autocomplete relevance is weakest.
+      // This is what makes one or two letters surface "your" song instead of the
+      // globally-popular one.
       let songs = songsRaw;
-      if (state.userLangs.length) {
+      {
         const priority = new Map(state.userLangs.map((lang, i) => [lang, i]));
+        const noMatchTier = state.userLangs.length;
+        let artistScores = {}, maxScore = 0;
+        try {
+          const tp = getTasteProfile();
+          artistScores = tp.artistScores || {};
+          maxScore = tp.topArtists?.[0]?.score || 0;
+        } catch {}
+        const scoreKeys = maxScore ? Object.keys(artistScores).map(k => [k.toLowerCase(), artistScores[k]]) : [];
+        const jump = query.trim().length <= 3 ? 15 : 8;
         const tiered = songsRaw.map((s, i) => {
-          const tier = priority.has(s.language) ? priority.get(s.language) : state.userLangs.length;
-          return { s, tier, i };
+          const tier = priority.has(s.language) ? priority.get(s.language) : noMatchTier;
+          let boost = 0;
+          if (maxScore && s.artist) {
+            const a = s.artist.toLowerCase();
+            for (const [name, sc] of scoreKeys) {
+              if (a.includes(name)) boost = Math.max(boost, Math.min(1, sc / maxScore));
+            }
+          }
+          return { s, tier, eff: i - boost * jump };
         });
-        tiered.sort((a, b) => a.tier - b.tier || a.i - b.i);
+        tiered.sort((a, b) => a.tier - b.tier || a.eff - b.eff);
         songs = tiered.map(t => t.s);
       }
 
@@ -4511,6 +4551,7 @@
           </div>
         `;
         renderSongList(dom.playlistViewSongs, songs, songs);
+        appendMoreLikeSection(songs).catch(() => {});
         switchPage("playlistView");
         $("plViewPlay").onclick = () => playSongAt(0, songs);
         $("plViewShuffle").onclick = () => {
@@ -4975,7 +5016,54 @@
       }, true);
     }
 
+    // ── "You might also like" — tracklist continuation ──
+    // A Top-10 chart or single-film OST dead-ends after a handful of songs;
+    // every other music app keeps the list going. Appends suggestion-seeded
+    // recommendations below short tracklists in the playlist/album view.
+    function removeMoreLikeSection() {
+      const el = $("plMoreLike");
+      if (el) el.remove();
+    }
+    async function appendMoreLikeSection(sourceSongs) {
+      removeMoreLikeSection();
+      if (!sourceSongs || sourceSongs.length < 1 || sourceSongs.length > 20) return;
+      const token = (state._moreLikeToken = (state._moreLikeToken || 0) + 1);
+      const seeds = sourceSongs.filter(s => s && s.id).slice(0, 2);
+      if (!seeds.length) return;
+      const results = await Promise.all(seeds.map(s =>
+        cachedApiFetch(`/songs/${encodeURIComponent(s.id)}/suggestions`, 6 * 3600 * 1000).catch(() => null)));
+      // View changed while we were fetching — don't graft onto the wrong page.
+      if (token !== state._moreLikeToken || state.currentPage !== "playlistView") return;
+      const have = new Set(sourceSongs.map(s => s.id));
+      const lists = results.map(r => (Array.isArray(r?.data) ? r.data : [])
+        .map(normalizeSong).filter(s => s.id && s.src));
+      const seen = new Set(); const out = [];
+      const maxLen = Math.max(0, ...lists.map(l => l.length));
+      outer: for (let i = 0; i < maxLen; i++) {
+        for (const l of lists) {
+          const s = l[i];
+          if (!s || seen.has(s.id) || have.has(s.id)) continue;
+          if (typeof isSuppressed === "function" && isSuppressed(s.id)) continue;
+          seen.add(s.id); out.push(s);
+          if (out.length >= 15) break outer;
+        }
+      }
+      if (out.length < 3) return;
+      const more = out.map(enrichSong);
+      const sec = document.createElement("div");
+      sec.id = "plMoreLike";
+      sec.style.marginTop = "40px";
+      sec.innerHTML = `<div class="section-header"><h3>You might also like</h3></div>`;
+      const list = document.createElement("div");
+      list.className = "song-list";
+      sec.appendChild(list);
+      dom.playlistViewSongs.insertAdjacentElement("afterend", sec);
+      // Queue = tracklist + continuation, so play flows straight through.
+      renderSongList(list, more, sourceSongs.concat(more));
+    }
+
     function showSongListSkeleton(target, count = 6) {
+      removeMoreLikeSection();
       target.innerHTML = "";
       for (let i = 0; i < count; i++) {
         target.innerHTML += `<div class="skeleton-song-row">
@@ -5076,6 +5164,7 @@
         </div>
       `;
       renderSongList(dom.playlistViewSongs, songs, songs);
+      appendMoreLikeSection(songs).catch(() => {});
       switchPage("playlistView");
 
       $("plViewPlay").onclick = () => { if (songs.length) playSongAt(0, songs); };
@@ -5703,6 +5792,30 @@
       try { navigator.mediaSession.setActionHandler("stop", () => {
         audio.pause(); audio.currentTime = 0; updatePlayBtn(false); updateNpControls(); updateMobPlayBtn(false);
       }); } catch (e) {}
+    }
+
+    // ── AUDIO SESSION (iOS 17+ Safari) ──
+    // Without declaring a session type, iOS treats web audio as mixable ambient
+    // sound and lets it keep playing through cellular/WhatsApp calls. "playback"
+    // makes the session non-mixable so the OS interrupts it like a real music app.
+    if ("audioSession" in navigator) {
+      try { navigator.audioSession.type = "playback"; } catch {}
+      let _resumeAfterInterrupt = false;
+      try {
+        navigator.audioSession.addEventListener("statechange", () => {
+          const s = navigator.audioSession.state;
+          if (s === "interrupted") {
+            _resumeAfterInterrupt = !audio.paused;
+            if (typeof stopCrossfadeNow === "function") { try { stopCrossfadeNow(); } catch {} }
+            try { audio.pause(); } catch {}
+          } else if (s === "active" && _resumeAfterInterrupt) {
+            // Call ended — try to pick the song back up like a native player.
+            // If iOS blocks the gestureless play(), we just stay paused.
+            _resumeAfterInterrupt = false;
+            audio.play().catch(() => {});
+          }
+        });
+      } catch {}
     }
 
     // Keyboard shortcuts
@@ -6784,6 +6897,51 @@
       return false;
     }
 
+    // ── INSTANT LOCAL RESULTS ──
+    // Zero-latency matches from the user's own library (favorites + recents),
+    // rendered synchronously on every keystroke while the network search is
+    // still in flight. Prefix matches on title/artist rank first.
+    function buildLocalMatchesSection(query) {
+      const q = query.trim().toLowerCase();
+      if (q.length < 1) return null;
+      const seen = new Set();
+      const pool = [];
+      for (const f of (state.favorites || [])) { if (f.song && !seen.has(f.song.id)) { seen.add(f.song.id); pool.push(f.song); } }
+      for (const s of getRecentlyPlayed()) { if (s && s.id && !seen.has(s.id)) { seen.add(s.id); pool.push(s); } }
+      const scored = [];
+      for (const s of pool) {
+        const title = (s.title || "").toLowerCase();
+        const artist = (s.artist || "").toLowerCase();
+        let rank = -1;
+        if (title.startsWith(q)) rank = 0;
+        else if (title.split(/\s+/).some(w => w.startsWith(q))) rank = 1;
+        else if (q.length >= 2 && (title.includes(q) || artist.includes(q))) rank = 2;
+        if (rank >= 0) scored.push({ s, rank });
+      }
+      if (!scored.length) return null;
+      scored.sort((a, b) => a.rank - b.rank);
+      const songs = scored.slice(0, 4).map(x => x.s);
+      const sec = document.createElement("div");
+      sec.id = "localMatchesSec";
+      sec.dataset.searchKind = "local";
+      sec.style.marginBottom = "32px";
+      sec.innerHTML = `<div class="section-header"><h3>From your library</h3></div>`;
+      const list = document.createElement("div");
+      list.className = "song-list";
+      sec.appendChild(list);
+      renderSongList(list, songs, songs);
+      return sec;
+    }
+    function renderInstantLocal(query) {
+      const existing = $("localMatchesSec");
+      const sec = buildLocalMatchesSection(query);
+      if (existing) existing.remove();
+      if (!sec) return;
+      $("searchHistoryWrap").classList.add("hidden");
+      $("searchEmpty").classList.add("hidden");
+      dom.searchResults.prepend(sec);
+    }
+
     let doSearch = debounce(async (query) => {
       const filters = $("searchFilters");
       if (!query.trim()) {
@@ -6806,13 +6964,15 @@
         addSearchHistory(query);
 
         dom.searchResults.innerHTML = "";
+        const localSec = buildLocalMatchesSection(query);
+        if (localSec) dom.searchResults.appendChild(localSec);
         const hasArtists = artists && artists.length;
         const hasAlbums = albums.length;
         const hasSongs = songs.length;
         const hasPlaylists = playlists && playlists.length;
         if (!hasSongs && !hasAlbums && !hasArtists && !hasPlaylists) {
           if (filters) filters.classList.add("hidden");
-          dom.searchResults.innerHTML = `<div class="empty-state"><h3>No results</h3><p>Try a different search.</p></div>`;
+          if (!localSec) dom.searchResults.innerHTML = `<div class="empty-state"><h3>No results</h3><p>Try a different search.</p></div>`;
           return;
         }
 
@@ -6872,7 +7032,7 @@
       } catch {
         if (token === state.searchToken) dom.searchResults.innerHTML = `<div class="empty-state"><h3>No results</h3><p>Try a different search.</p></div>`;
       }
-    }, 400);
+    }, 250);
 
     // Show/hide search-result sections based on the active filter pill.
     function applySearchFilter(kind) {
@@ -6885,7 +7045,10 @@
       const sections = dom.searchResults.querySelectorAll("[data-search-kind]");
       sections.forEach(sec => {
         const k = sec.dataset.searchKind;
-        sec.style.display = (state.searchFilter === "all" || state.searchFilter === k) ? "" : "none";
+        // Local library matches are songs — show them under the Songs pill too.
+        const match = state.searchFilter === "all" || state.searchFilter === k
+          || (state.searchFilter === "songs" && k === "local");
+        sec.style.display = match ? "" : "none";
       });
     }
 
@@ -6900,6 +7063,7 @@
       dom.searchClear.classList.toggle("hidden", !v);
       if (v && state.currentPage !== "search") switchPage("search");
       if (!v) renderSearchHistory();
+      else renderInstantLocal(v); // zero-latency library hits while network search debounces
       doSearch(v);
     };
 
@@ -7129,9 +7293,17 @@
 
     // ── GREETING ──
     function updateGreeting() {
-      const h = new Date().getHours();
+      const now = new Date();
+      const h = now.getHours();
       const g = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
       $("greetingText").textContent = state.user ? `${g}, ${state.user.name}` : g;
+      // Editorial date eyebrow — "WEDNESDAY, JULY 2"
+      const dateEl = $("greetingDate");
+      if (dateEl) {
+        try {
+          dateEl.textContent = now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+        } catch { dateEl.textContent = ""; }
+      }
     }
 
     // ── HOME: LOCATION-AWARE CATALOG ──
@@ -7310,6 +7482,7 @@
             </div>
           `;
           renderSongList(dom.playlistViewSongs, songs, songs);
+          appendMoreLikeSection(songs).catch(() => {});
           switchPage("playlistView");
           $("plViewPlay").onclick = () => playSongAt(0, songs);
           $("plViewShuffle").onclick = () => {
@@ -7689,6 +7862,19 @@
         orderedLangs = userLangs;
       }
 
+      // Deterministic daily shuffle — JioSaavn pins the same ~30 new_albums in
+      // the same order for weeks, so without this the top rows look frozen.
+      // Same order all day (stable across visits), fresh arrangement tomorrow.
+      const dailyShuffle = (arr, salt) => {
+        const rng = dailyRng(salt);
+        const a = arr.slice();
+        for (let i = a.length - 1; i > 0; i--) {
+          const j = Math.floor(rng() * (i + 1));
+          [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
+      };
+
       for (const lang of orderedLangs) {
         const albumsForLang = newAlbums.filter(a => a.language === lang && !usedAlbumIds.has(a.id));
         if (albumsForLang.length) {
@@ -7696,7 +7882,7 @@
           sections.push({
             key: `new_${lang}_albums`,
             title: `New ${langTitle[lang] || lang} Releases`,
-            items: albumsForLang.slice(0, 12)
+            items: dailyShuffle(albumsForLang, `albums_${lang}`).slice(0, 12)
           });
         }
         const chartsForLang = charts.filter(c => c.language === lang && !usedChartIds.has(c.id));
@@ -7705,7 +7891,7 @@
           sections.push({
             key: `${lang}_charts`,
             title: `${langTitle[lang] || lang} Charts`,
-            items: chartsForLang.slice(0, 12)
+            items: dailyShuffle(chartsForLang, `charts_${lang}`).slice(0, 12)
           });
         }
       }
@@ -7809,7 +7995,7 @@
           sectionEl.dataset.moduleKey = sec.key;
           if (typeof recordModuleImpression === "function") recordModuleImpression(sec.key);
         }
-        sectionEl.innerHTML = `<div class="section-header"><h3>${escapeHtml(sec.title)}</h3></div>`;
+        sectionEl.innerHTML = `<div class="section-header"><h3>${escapeHtml(sec.title)}</h3>${_shelfNavHTML()}</div>`;
         const shelf = document.createElement("div");
         shelf.className = "card-shelf" + (opts.wide ? " card-shelf--wide" : "");
         sec.items.forEach(item => shelf.appendChild(renderHomeCard(item)));
@@ -7820,6 +8006,9 @@
       // 1. Personal rows — local data, fill instantly, fixed slots.
       container.appendChild(makeHomeShell("followed-artists"));
       container.appendChild(makeHomeShell("daily-mix"));
+      // Hot Right Now sits above the language rows — it's the one slot whose
+      // content is genuinely different every day.
+      container.appendChild(makeHomeShell("daily-charts"));
       renderFollowedArtistsRow();
       renderDailyMixes();
 
@@ -7847,6 +8036,7 @@
       if (unchecked.length) validateAlbumsInBackground(unchecked);
 
       // Async fillers — each targets its reserved shell above, in place.
+      loadDailyChartsRow(data).catch(() => {});
       loadMoreLikeThis().catch(() => {});
       loadSimilarArtistsRow().catch(() => {});
       renderLangTrendingRow().catch(() => {});
@@ -7858,6 +8048,28 @@
         refreshDailyMixDiscovery().then(changed => { if (changed) renderDailyMixes(); }).catch(() => {});
       }
     }
+
+    // Paging arrows for shelf rows (desktop). Clicks are handled by one
+    // delegated listener on #homeSections; .card-less buttons never trigger
+    // the UCB1 reward delegation, which only matches .card/.recent-card.
+    function _shelfNavHTML() {
+      return `<div class="shelf-nav">
+        <button data-shelf-nav="-1" aria-label="Scroll back" tabindex="-1"><svg><use href="#ico-arrow-left"/></svg></button>
+        <button data-shelf-nav="1" aria-label="Scroll forward" tabindex="-1"><svg><use href="#ico-arrow-right"/></svg></button>
+      </div>`;
+    }
+    (function wireShelfNavDelegation() {
+      const root = $("homeSections");
+      if (!root || root._shelfNavWired) return;
+      root._shelfNavWired = true;
+      root.addEventListener("click", (e) => {
+        const btn = e.target.closest && e.target.closest("[data-shelf-nav]");
+        if (!btn) return;
+        const shelf = btn.closest(".home-section")?.querySelector(".card-shelf");
+        if (!shelf) return;
+        shelf.scrollBy({ left: Math.round(shelf.clientWidth * 0.9) * Number(btn.dataset.shelfNav), behavior: "smooth" });
+      });
+    })();
 
     // ── Home section shells ──
     // Async rows render into pre-reserved, hidden slots so late content fills
@@ -7881,7 +8093,7 @@
       const el = homeShell(key);
       if (!el) return null;
       if (!cards || !cards.length) { el.classList.add("hidden"); el.innerHTML = ""; return el; }
-      el.innerHTML = `<div class="section-header"><h3>${title}</h3></div>`;
+      el.innerHTML = `<div class="section-header"><h3>${title}</h3>${_shelfNavHTML()}</div>`;
       const shelf = document.createElement("div");
       shelf.className = "card-shelf" + (opts.wide ? " card-shelf--wide" : "");
       cards.forEach(c => shelf.appendChild(c));
@@ -7944,6 +8156,45 @@
       const items = Array.from(artistById.values()).filter(a => a.image).slice(0, 12);
       if (items.length < 4) { fillHomeShell("featured_artists", "", []); return; }
       fillHomeShell("featured_artists", "Featured Artists", items.map(a => renderHomeCard(a)));
+    }
+
+    // Hot Right Now — songs pulled from JioSaavn's dynamic charts ("Trending
+    // Today", "Most Searched Songs - {lang}"). Verified upstream: these rotate
+    // daily, unlike new_albums which pins the same order for weeks. This row
+    // is what keeps the top of the homepage feeling alive. 6h cache.
+    async function loadDailyChartsRow(data) {
+      const charts = (data?.charts || []).map(normalizeModulePlaylist).filter(c => c.id);
+      const dynamic = charts.filter(c => /trending|most searched|most streamed/i.test(c.title || ""));
+      if (!dynamic.length) { fillHomeShell("daily-charts", "", []); return; }
+      // Charts in the user's languages first; language-less ones (global
+      // "Trending Today") are fine too.
+      const langs = new Set(state.userLangs || []);
+      dynamic.sort((a, b) =>
+        ((a.language && langs.has(a.language)) ? 0 : 1) - ((b.language && langs.has(b.language)) ? 0 : 1));
+      const picks = dynamic.slice(0, 2);
+      const results = await Promise.all(picks.map(p =>
+        cachedApiFetch(`/playlists?id=${encodeURIComponent(p.id)}&limit=20`, 6 * 3600 * 1000).catch(() => null)));
+      const lists = results.map(r =>
+        ((r?.data?.songs) || []).map(normalizeSong).filter(s => s.id && s.src && s.image));
+      // Interleave so one chart doesn't dominate; dedupe; respect skip-suppression.
+      const seen = new Set(); const songs = [];
+      const maxLen = Math.max(0, ...lists.map(l => l.length));
+      outer: for (let i = 0; i < maxLen; i++) {
+        for (const l of lists) {
+          const s = l[i];
+          if (!s || seen.has(s.id)) continue;
+          if (typeof isSuppressed === "function" && isSuppressed(s.id)) continue;
+          seen.add(s.id); songs.push(s);
+          if (songs.length >= 14) break outer;
+        }
+      }
+      if (songs.length < 4) { fillHomeShell("daily-charts", "", []); return; }
+      const queue = songs.map(enrichSong);
+      const cards = queue.map(s => renderHomeCard({
+        id: s.id, type: "song", title: s.title, image: s.image, subtitle: s.artist,
+        _songRef: s, _queueRef: queue
+      }));
+      fillHomeShell("daily-charts", "Hot Right Now", cards);
     }
 
     // G2 + #6: "Top {lang} Hits" — one row per dominant language with >=25%
