@@ -2964,10 +2964,10 @@
           <button class="lib-tab" data-search-filter="playlists" role="tab" aria-selected="false">Playlists</button>
         </div>
         <div id="searchResults" class="song-list"></div>
-        <div id="searchEmpty">
-          <div class="section-header" style="margin-top:8px"><h3>Browse All</h3></div>
-          <div id="browseCategories" class="browse-grid"></div>
-        </div>
+        <!-- Idle search page shows Recent Searches only — the "Browse All"
+             category grid was removed by request. renderBrowseCategories()
+             no-ops without #browseCategories; the Browse page is unaffected. -->
+        <div id="searchEmpty"></div>
       </section>
 
       <!-- BROWSE PAGE (Phase E) — full mood/decade/activity tile grid -->
