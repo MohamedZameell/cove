@@ -5486,7 +5486,7 @@
           }
         }
       } catch {}
-      if (!force && state.repeatMode === "one") { audio.currentTime = 0; audio.play(); return; }
+      if (!force && state.repeatMode === "one") { audio.currentTime = 0; playOrRetry(); return; }
       let next = state.currentIndex + 1;
       if (next >= state.currentQueue.length) {
         if (state.repeatMode === "all" || force) {
@@ -5676,6 +5676,10 @@
 
     function cycleRepeat() {
       state.repeatMode = state.repeatMode === "off" ? "all" : state.repeatMode === "all" ? "one" : "off";
+      // Native element loop for repeat-one: the media engine restarts the track
+      // itself (gapless, works locked/backgrounded). The JS ended→play() path
+      // gets blocked by iOS after a call interruption — see playOrRetry.
+      audio.loop = state.repeatMode === "one";
       dom.repeatBtn.classList.toggle("is-active", state.repeatMode !== "off");
       dom.repeatBtn.innerHTML = `<svg style="width:16px;height:16px;fill:currentColor"><use href="${state.repeatMode === "one" ? "#ico-repeat-one" : "#ico-repeat"}"/></svg>`;
       // a11y: repeat is tri-state, so use aria-label rather than aria-pressed
@@ -5689,6 +5693,7 @@
 
     // ── PLAYER EVENTS ──
     audio.ontimeupdate = () => {
+      if (!audio.paused) _lastPlayingTs = Date.now();
       // B7 resume save (throttled to ~5s, single handler — was previously
       // duplicated by an additional addEventListener that has been removed).
       if (typeof _lastResumeSave !== "undefined" && Date.now() - _lastResumeSave > 5000) {
@@ -5725,6 +5730,20 @@
 
     audio.onloadedmetadata = () => { dom.totalTime.textContent = fmt(audio.duration); $("npTotal").textContent = fmt(audio.duration); };
     audio.onended = () => { if (!xfadeActive) skipNext(); };
+
+    // iOS rejects a gestureless play() fired from a background page once an
+    // audio-session interruption (cellular/WhatsApp call) has occurred — the
+    // repeat-one restart and post-call resume both die silently. Park the
+    // intent and retry the moment the app is foregrounded.
+    let _pendingPlayRetry = false;
+    let _lastPlayingTs = 0;
+    function playOrRetry() {
+      audio.play().then(() => { _pendingPlayRetry = false; })
+        .catch(() => { _pendingPlayRetry = true; });
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && _pendingPlayRetry) playOrRetry();
+    });
 
     // Progress seek
     dom.progressTrack.onclick = (e) => {
@@ -5849,14 +5868,16 @@
         navigator.audioSession.addEventListener("statechange", () => {
           const s = navigator.audioSession.state;
           if (s === "interrupted") {
-            _resumeAfterInterrupt = !audio.paused;
+            // iOS may pause the element BEFORE this event fires, so !audio.paused
+            // alone can miss; fall back to "was playing within the last 3s".
+            _resumeAfterInterrupt = !audio.paused || (Date.now() - _lastPlayingTs < 3000);
             if (typeof stopCrossfadeNow === "function") { try { stopCrossfadeNow(); } catch {} }
             try { audio.pause(); } catch {}
           } else if (s === "active" && _resumeAfterInterrupt) {
-            // Call ended — try to pick the song back up like a native player.
-            // If iOS blocks the gestureless play(), we just stay paused.
+            // Call ended — pick the song back up like a native player. If iOS
+            // blocks the gestureless play(), playOrRetry re-fires on foreground.
             _resumeAfterInterrupt = false;
-            audio.play().catch(() => {});
+            playOrRetry();
           }
         });
       } catch {}
@@ -6182,6 +6203,7 @@
       loadSavedPlaylists();
       const settings = loadSettings();
       state.repeatMode = settings.repeat_mode || "off";
+      audio.loop = state.repeatMode === "one";
       state.shuffleOn = !!settings.shuffle_enabled;
       updateShuffleUI();
       dom.repeatBtn.classList.toggle("is-active", state.repeatMode !== "off");
