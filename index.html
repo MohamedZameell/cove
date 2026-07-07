@@ -5438,11 +5438,10 @@
           artwork: artworkList
         });
         navigator.mediaSession.playbackState = "playing";
-        // Re-assert prev/next and suppress seek on every song change (iOS resets on metadata set)
-        navigator.mediaSession.setActionHandler("previoustrack", () => skipPrev());
-        navigator.mediaSession.setActionHandler("nexttrack", () => skipNext(true));
-        try { navigator.mediaSession.setActionHandler("seekbackward", null); } catch {}
-        try { navigator.mediaSession.setActionHandler("seekforward", null); } catch {}
+        // Re-assert ALL action handlers on every song change (iOS resets on
+        // metadata set). play/pause used to be registered once at boot, so
+        // AirPods single-press died after the first track change.
+        assertMediaSessionHandlers();
       }
       persistSettings({ last_song_id: song.id, last_song: song });
 
@@ -5473,6 +5472,12 @@
           // second deck went busy with a real crossfade.
           if (state.currentQueue?.[state.currentIndex + 1]?.id !== next.id) return;
           if (xfadeActive) return;
+          // iOS: attaching the next track to the idle deck can re-target
+          // WebKit's Now Playing session at audio2, so AirPods / lock-screen
+          // play-pause act on the wrong (idle) element. The src pre-resolution
+          // above is the real gap-killer — keep it, skip the element warm
+          // where crossfade is disabled anyway.
+          if (!canFadeVolume) return;
           if (audio2.src !== src) {
             audio2.preload = "auto";
             audio2.src = src;
@@ -5866,24 +5871,37 @@
       $("mobPlayPause").innerHTML = `<svg style="width:20px;height:20px;fill:currentColor"><use href="${playing ? '#ico-pause' : '#ico-play'}"/></svg>`;
     }
 
-    // MediaSession
-    if ("mediaSession" in navigator) {
-      navigator.mediaSession.setActionHandler("play", () => audio.play());
-      navigator.mediaSession.setActionHandler("pause", () => audio.pause());
-      navigator.mediaSession.setActionHandler("previoustrack", () => skipPrev());
-      navigator.mediaSession.setActionHandler("nexttrack", () => skipNext(true));
+    // MediaSession — every handler lives in this one function because iOS
+    // silently wipes action handlers whenever metadata is assigned;
+    // updateSongInfo re-asserts them on every song change.
+    function assertMediaSessionHandlers() {
+      if (!("mediaSession" in navigator)) return;
+      const ms = navigator.mediaSession;
+      // AirPods single-press / lock screen. Mirrors playPauseBtn: fall back
+      // to playSongAt when the staged src is missing or errored (boot
+      // resume), and use playOrRetry so an iOS post-interruption play()
+      // rejection re-fires on foreground instead of dying silently.
+      ms.setActionHandler("play", () => {
+        if (audio.src && !audio.error) playOrRetry();
+        else if (currentSong()) playSongAt(state.currentIndex, state.currentQueue);
+        else if (state.songs.length) playSongAt(0, state.songs);
+      });
+      ms.setActionHandler("pause", () => audio.pause());
+      ms.setActionHandler("previoustrack", () => skipPrev());
+      ms.setActionHandler("nexttrack", () => skipNext(true));
       // iOS chooses between seek (±10s) and skip (prev/next) based on which
       // handlers are registered. Explicitly disable seek so the lock screen
       // always shows next/previous track buttons.
-      try { navigator.mediaSession.setActionHandler("seekbackward", null); } catch (e) {}
-      try { navigator.mediaSession.setActionHandler("seekforward", null); } catch (e) {}
-      try { navigator.mediaSession.setActionHandler("seekto", (details) => {
+      try { ms.setActionHandler("seekbackward", null); } catch (e) {}
+      try { ms.setActionHandler("seekforward", null); } catch (e) {}
+      try { ms.setActionHandler("seekto", (details) => {
         if (details.seekTime != null && audio.duration) audio.currentTime = details.seekTime;
       }); } catch (e) {}
-      try { navigator.mediaSession.setActionHandler("stop", () => {
+      try { ms.setActionHandler("stop", () => {
         audio.pause(); audio.currentTime = 0; updatePlayBtn(false); updateNpControls(); updateMobPlayBtn(false);
       }); } catch (e) {}
     }
+    assertMediaSessionHandlers();
 
     // ── AUDIO SESSION (iOS 17+ Safari) ──
     // Without declaring a session type, iOS treats web audio as mixable ambient
