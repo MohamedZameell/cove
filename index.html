@@ -2881,8 +2881,9 @@
           <button id="locationBannerBtn" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:20px;font-weight:700;font-size:0.82rem;cursor:pointer;">Allow</button>
         </div>
 
-        <!-- Quick Picks: recents + Daily Mix + new releases, 2x4 -->
+        <!-- Recently Played: the last 2 songs, nothing else -->
         <div id="recentSection" class="hidden" style="margin-bottom:36px;">
+          <div class="section-header"><h3>Recently Played</h3></div>
           <div id="recentGrid" class="recent-grid"></div>
         </div>
 
@@ -5807,7 +5808,14 @@
     });
 
     // Controls
-    dom.playPauseBtn.onclick = () => { haptic(); if (audio.src) { audio.paused ? audio.play() : audio.pause(); } else if (state.songs.length) playSongAt(0, state.songs); };
+    dom.playPauseBtn.onclick = () => {
+      haptic();
+      if (audio.src && !audio.error) { audio.paused ? audio.play() : audio.pause(); }
+      // Restored-from-resume queue with no staged src (stale/blob link) —
+      // route through playSongAt so the source gets resolved fresh.
+      else if (currentSong()) playSongAt(state.currentIndex, state.currentQueue);
+      else if (state.songs.length) playSongAt(0, state.songs);
+    };
     dom.nextBtn.onclick = () => { haptic(); skipNext(true); };
     dom.prevBtn.onclick = () => { haptic(); skipPrev(); };
     dom.shuffleBtn.onclick = () => { haptic(); toggleShuffle(); };
@@ -7128,6 +7136,19 @@
 
         if (filters) filters.classList.remove("hidden");
 
+        // Songs lead — they're what a search is for; artists come second.
+        if (hasSongs) {
+          const songSection = document.createElement("div");
+          songSection.dataset.searchKind = "songs";
+          songSection.style.marginBottom = "32px";
+          songSection.innerHTML = `<div class="section-header"><h3>Songs</h3></div>`;
+          const list = document.createElement("div");
+          list.className = "song-list";
+          dom.searchResults.appendChild(songSection);
+          songSection.appendChild(list);
+          renderSongList(list, songs, songs);
+        }
+
         if (hasArtists) {
           const sec = document.createElement("div");
           sec.dataset.searchKind = "artists";
@@ -7165,17 +7186,6 @@
           });
           plSection.appendChild(grid);
           dom.searchResults.appendChild(plSection);
-        }
-
-        if (hasSongs) {
-          const songSection = document.createElement("div");
-          songSection.dataset.searchKind = "songs";
-          songSection.innerHTML = `<div class="section-header"><h3>Songs</h3></div>`;
-          const list = document.createElement("div");
-          list.className = "song-list";
-          dom.searchResults.appendChild(songSection);
-          songSection.appendChild(list);
-          renderSongList(list, songs, songs);
         }
 
         applySearchFilter(state.searchFilter || "all");
@@ -7962,8 +7972,9 @@
     }
 
     // Builds the whole homepage synchronously from a /modules payload.
-    // Layout contract: personal rows → language rows (dominant language leads)
-    // → reserved shells for async rows → UCB1-ranked editorial tail → podcasts.
+    // Layout contract: charts rows (Tamil → Hindi → English, fixed) → personal
+    // rows → language new-release rows (dominant language leads) → reserved
+    // shells for async rows → UCB1-ranked editorial tail → podcasts.
     // Async rows fill pre-reserved shells IN PLACE — nothing inserts above
     // content the user is already looking at.
     function renderHomeModuleSections(data) {
@@ -8025,6 +8036,27 @@
         return a;
       };
 
+      // ── Charts-first rows ──
+      // Pinned to the very top of the page in a fixed Tamil → Hindi → English
+      // order. Within each row the ordering is deterministic (no daily
+      // shuffle): Trending Today → Most Streamed → Most Searched → the decade
+      // compilations in their upstream order.
+      const CHART_LANGS = ["tamil", "hindi", "english"];
+      const chartRank = t =>
+        /trending/i.test(t) ? 0 : /most streamed/i.test(t) ? 1 : /most searched/i.test(t) ? 2 : 3;
+      const chartSections = [];
+      for (const lang of CHART_LANGS) {
+        const chartsForLang = charts.filter(c => c.language === lang && !usedChartIds.has(c.id));
+        if (!chartsForLang.length) continue;
+        chartsForLang.forEach(c => usedChartIds.add(c.id));
+        chartsForLang.sort((a, b) => chartRank(a.title || "") - chartRank(b.title || ""));
+        chartSections.push({
+          key: `${lang}_charts`,
+          title: `${langTitle[lang]} Charts`,
+          items: chartsForLang.slice(0, 12)
+        });
+      }
+
       for (const lang of orderedLangs) {
         const albumsForLang = newAlbums.filter(a => a.language === lang && !usedAlbumIds.has(a.id));
         if (albumsForLang.length) {
@@ -8033,15 +8065,6 @@
             key: `new_${lang}_albums`,
             title: `New ${langTitle[lang] || lang} Releases`,
             items: dailyShuffle(albumsForLang, `albums_${lang}`).slice(0, 12)
-          });
-        }
-        const chartsForLang = charts.filter(c => c.language === lang && !usedChartIds.has(c.id));
-        if (chartsForLang.length) {
-          chartsForLang.forEach(c => usedChartIds.add(c.id));
-          sections.push({
-            key: `${lang}_charts`,
-            title: `${langTitle[lang] || lang} Charts`,
-            items: dailyShuffle(chartsForLang, `charts_${lang}`).slice(0, 12)
           });
         }
       }
@@ -8107,7 +8130,7 @@
       // row can dedupe against them and we don't show the same tile twice.
       state._renderedPlaylistIds = new Set([...usedPlaylistIds, ...usedChartIds]);
 
-      if (!sections.length && !tail.length) throw new Error("modules: nothing to render");
+      if (!chartSections.length && !sections.length && !tail.length) throw new Error("modules: nothing to render");
 
       // ── G3: UCB1 module bandit — editorial tail only ──
       // Personal and language rows hold fixed slots so the page structure is
@@ -8128,8 +8151,7 @@
         console.warn("[ucb1] section ranking skipped:", err?.message || err);
       }
 
-      // Re-render Quick Picks now that new_albums are cached, so the grid can
-      // pick up editorial entries to fill the 8 slots.
+      // Refresh Recently Played (sig-memoized — no-op when nothing changed).
       renderRecentlyPlayed();
 
       const container = $("homeSections");
@@ -8153,28 +8175,31 @@
         container.appendChild(sectionEl);
       };
 
-      // 1. Personal rows — local data, fill instantly, fixed slots.
+      // 1. Charts rows — pinned first: Tamil → Hindi → English, Trending
+      // Today leading. The rest of the page ("artist and all other crap")
+      // renders below these.
+      chartSections.forEach(sec => addModuleSection(sec));
+
+      // 2. Personal rows — local data, fill instantly, fixed slots.
       container.appendChild(makeHomeShell("followed-artists"));
       container.appendChild(makeHomeShell("daily-mix"));
-      // Hot Right Now sits above the language rows — it's the one slot whose
-      // content is genuinely different every day.
       container.appendChild(makeHomeShell("daily-charts"));
       renderFollowedArtistsRow();
       renderDailyMixes();
 
-      // 2. Language rows — the dominant language anchors the page.
+      // 3. Language new-release rows — the dominant language anchors them.
       sections.forEach(sec => addModuleSection(sec));
 
-      // 3. Reserved shells for async personalized rows (filled in place later).
+      // 4. Reserved shells for async personalized rows (filled in place later).
       container.appendChild(makeHomeShell("more-like"));
       container.appendChild(makeHomeShell("lang-trending"));
       container.appendChild(makeHomeShell("similar-artists"));
       container.appendChild(makeHomeShell("featured_artists"));
 
-      // 4. Editorial / discovery tail, bandit-ranked.
+      // 5. Editorial / discovery tail, bandit-ranked.
       tail.forEach(sec => addModuleSection(sec, { wide: sec.key === "browse_genres" }));
 
-      // 5. Podcasts pinned last.
+      // 6. Podcasts pinned last.
       container.appendChild(makeHomeShell("podcasts"));
 
       showHome();
@@ -9343,57 +9368,27 @@
       const grid = $("recentGrid");
       if (!section || !grid) return;
 
-      const recents = getRecentlyPlayed().slice(0, 4);
-      const mixes = (typeof buildDailyMixes === "function" ? buildDailyMixes() : []).slice(0, 2);
-
-      // Pull a couple of editorial "new release" albums from the cached homepage
-      // payload if it has loaded. Best-effort — Quick Picks works without these.
-      let newAlbums = [];
-      try {
-        const cached = readModulesCache();
-        const raw = cached?.data?.new_albums || [];
-        // Prefer albums in the user's dominant language so Quick Picks doesn't
-        // sneak a random Hindi album into a Tamil-listener's grid.
-        const profile = (typeof getTasteProfile === "function") ? getTasteProfile() : null;
-        const preferredLangs = new Set([
-          ...(profile?.dominantLangs || []).map(d => d.lang),
-          ...(state.userLangs || [])
-        ]);
-        const normalized = raw.map(normalizeModuleAlbum).filter(a => a.id && a.image);
-        const inLang = preferredLangs.size
-          ? normalized.filter(a => preferredLangs.has((a.language || "").toLowerCase()))
-          : [];
-        newAlbums = (inLang.length ? inLang : normalized).slice(0, 2);
-      } catch {}
-
-      const items = [];
-      recents.forEach(s => items.push({
+      // Just the last 2 played songs — mixes/new-release filler dropped by
+      // request (Daily Mix still has its own homepage row).
+      const items = getRecentlyPlayed().slice(0, 2).map(s => ({
         kind: "song", id: s.id, title: s.title, subtitle: s.artist,
         image: s.image, _ref: s
       }));
-      mixes.forEach(m => items.push({
-        kind: "mix", id: m.id, title: m.title, subtitle: m.subtitle,
-        image: m.image, _ref: m
-      }));
-      newAlbums.forEach(a => items.push({
-        kind: "album", id: a.id, title: a.title,
-        subtitle: a.subtitle || "Album", image: a.image
-      }));
 
-      if (items.length < 4) { section.classList.add("hidden"); return; }
+      if (!items.length) { section.classList.add("hidden"); return; }
       section.classList.remove("hidden");
 
       // Skip re-render if nothing changed since last call. Stops the cold-start
       // flicker where loadInitial calls us first, then loadHomeFromModules calls
       // us again 200-400ms later with the same items.
-      const sig = items.slice(0, 8).map(i => `${i.kind}:${i.id}`).join("|");
+      const sig = items.map(i => `${i.kind}:${i.id}`).join("|");
       if (grid.dataset.sig === sig && grid.children.length) return;
       grid.dataset.sig = sig;
       grid.innerHTML = "";
 
       const kindLabel = { mix: "Mix", album: "Album" };
 
-      items.slice(0, 8).forEach(item => {
+      items.forEach(item => {
         const card = document.createElement("div");
         card.className = "recent-card";
         card.setAttribute("role", "button");
@@ -9748,22 +9743,49 @@
         if (Date.now() - (r.savedAt || 0) > 14 * 86_400_000) return;
         const idx = (typeof r.idx === "number" && r.idx >= 0 && r.idx < r.queue.length) ? r.idx : 0;
         const song = r.queue[idx];
-        if (!song || !song.src) return;
+        if (!song || !song.id) return;
         state.currentQueue = r.queue;
         state.currentIndex = idx;
         state.unshuffledQueue = [];
         state._pendingResume = { songId: r.songId, t: r.t || 0 };
-        // Stage audio without auto-playing — load the src so the play button works
-        try {
-          audio.src = song.src;
-          audio.load();
-        } catch {}
-        // Reflect now-playing UI bits without starting playback
+        // blob: object URLs die with the session — drop them so the play
+        // button re-resolves a fresh source through playSongAt instead.
+        if (/^blob:/.test(song.src || "")) delete song.src;
+        if (song.src) {
+          // Stage audio without auto-playing — load the src so the play button works
+          try { audio.src = song.src; audio.load(); } catch {}
+        }
+        // Surface the restored song in the player bar + overlay, progress
+        // where you left it — the app reopens mid-session instead of showing
+        // the logo and making you hunt for the song.
+        crossfadeArt(dom.nowArt, song.image || DEFAULT_ART);
+        dom.nowTitle.textContent = song.title;
+        dom.nowArtist.textContent = song.artist;
+        dom.totalTime.textContent = fmt(song.duration);
+        const dur = parseInt(song.duration) || 0;
+        const t = r.t || 0;
+        if (dur > 0 && t > 0) {
+          const pct = Math.min(100, (t / dur) * 100);
+          dom.progressFill.style.width = pct + "%";
+          dom.mobFill.style.width = pct + "%";
+          $("npFill").style.width = pct + "%";
+          dom.currentTime.textContent = fmt(t);
+          $("npCurrent").textContent = fmt(t);
+        }
         updateNowPlayingOverlay?.(song);
         if (typeof updateNowFav === "function") updateNowFav();
         if (typeof refreshActiveSongRows === "function") refreshActiveSongRows();
       } catch {}
     }
+    // A resume-staged src can be stale (CDN link changed since last session):
+    // the element fires `error` instead of playing. Drop the dead src — the
+    // play button then falls through to playSongAt, which resolves fresh.
+    audio.addEventListener("error", () => {
+      const song = currentSong();
+      if (!state._pendingResume || !song || state._pendingResume.songId !== song.id) return;
+      delete song.src;
+      try { audio.removeAttribute("src"); audio.load(); } catch {}
+    });
     // Throttled save during playback is wired into the main `audio.ontimeupdate`
     // handler above (single handler, no duplicate listener).
     // Persist on tab close so a hard reload right after pause is captured
