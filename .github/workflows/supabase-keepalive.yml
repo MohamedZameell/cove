@@ -1,0 +1,29 @@
+# Supabase free-tier projects are paused after ~7 days without any API
+# activity. Normal Cove usage generates activity (boot pullFromCloud + auth
+# refresh), but this ping makes sure the project stays awake even through a
+# no-listening week. The anon key is already public in the deployed
+# index.html, so embedding it here exposes nothing new.
+#
+# Note: GitHub disables scheduled workflows after 60 days without repo
+# activity — a commit (or re-enabling in the Actions tab) revives it.
+name: Supabase keep-alive
+
+on:
+  schedule:
+    - cron: "23 3 * * *" # daily, 03:23 UTC (~08:53 IST)
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST
+        env:
+          SUPABASE_URL: https://yorbapspeyoxiwtdmtro.supabase.co
+          KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlvcmJhcHNwZXlveGl3dGRtdHJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzE2NjAsImV4cCI6MjA5MTMwNzY2MH0.COPt4l-h3UNNk3JN3NihhIbmBwicBgBp1G8APlnT7Co
+        run: |
+          curl -sf "$SUPABASE_URL/rest/v1/isai_favorites?select=song_id&limit=1" \
+            -H "apikey: $KEY" \
+            -H "Authorization: Bearer $KEY" \
+            -o /dev/null
+          echo "Supabase pinged OK"

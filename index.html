@@ -9,6 +9,14 @@
   <title>Cove</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Warm up TLS to every host the app hits in its first seconds: the API
+       proxy + Supabase are CORS fetches (crossorigin), artwork/audio CDNs and
+       the SDK script are no-cors (no attribute). Saves one RTT+handshake each. -->
+  <link rel="preconnect" href="https://jiosaavn-proxy.zameelraja.workers.dev" crossorigin>
+  <link rel="preconnect" href="https://yorbapspeyoxiwtdmtro.supabase.co" crossorigin>
+  <link rel="preconnect" href="https://c.saavncdn.com">
+  <link rel="preconnect" href="https://aac.saavncdn.com">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
   <!-- Non-blocking font load: media="print" defers apply until onload flips it.
        display=swap + system fallbacks mean text renders immediately either way. -->
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" media="print" onload="this.media='all'">
@@ -890,6 +898,18 @@
     /* Horizontal snap shelf — one row per home section, scrolls sideways.
        Replaces the wrapping grid on the homepage so 12-item sections don't
        stack into a 6-row wall on phones. */
+    /* Below-fold home rows and song rows skip layout+paint entirely until
+       scrolled near (content-visibility). intrinsic-size keeps the scrollbar
+       stable; `auto` remembers the real size once a row has been rendered. */
+    #homeSections .home-section {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 300px;
+    }
+    .song-list .song-row {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 56px;
+    }
+
     .card-shelf {
       display: grid;
       grid-auto-flow: column;
