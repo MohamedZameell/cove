@@ -5915,12 +5915,32 @@
       try { navigator.audioSession.type = "playback"; } catch {}
       let _resumeAfterInterrupt = false;
       let _resumeTries = 0;
+      let _interruptPos = 0;
+      let _lastInterruptTs = 0;
       // Post-call resume. iOS can reject play() for a second or two right
       // after the call ends (and outright while backgrounded), so retry a few
       // times, then park in _pendingPlayRetry for the foreground/tap paths.
       const tryResume = () => {
         if (!_resumeAfterInterrupt) return;
-        audio.play().then(() => { _resumeAfterInterrupt = false; _pendingPlayRetry = false; })
+        const wasHidden = document.visibilityState === "hidden";
+        audio.play().then(() => {
+          if (!wasHidden) { _resumeAfterInterrupt = false; _pendingPlayRetry = false; return; }
+          // From a locked/backgrounded page play() can "succeed" SILENTLY:
+          // the media clock runs (bar + time advance) but iOS never
+          // re-activates the audio session, so there is no sound. In that
+          // zombie the session state stays non-active — verify after a beat;
+          // if silent, stop the clock, rewind to the interruption point and
+          // hand off to the unlock/foreground/tap paths.
+          setTimeout(() => {
+            if (navigator.audioSession.state === "active" && !audio.paused) {
+              _resumeAfterInterrupt = false; _pendingPlayRetry = false;
+            } else {
+              try { if (_interruptPos) audio.currentTime = _interruptPos; audio.pause(); } catch {}
+              _resumeAfterInterrupt = false;
+              _pendingPlayRetry = true;
+            }
+          }, 1200);
+        })
           .catch(() => {
             if (++_resumeTries < 5) setTimeout(tryResume, 900);
             else { _resumeAfterInterrupt = false; _pendingPlayRetry = true; }
@@ -5934,6 +5954,7 @@
             // iOS may pause the element BEFORE this event fires, so !audio.paused
             // alone can miss; fall back to "was playing within the last 3s".
             _resumeAfterInterrupt = !audio.paused || (Date.now() - _lastPlayingTs < 3000);
+            if (_resumeAfterInterrupt) { _interruptPos = audio.currentTime || _interruptPos; _lastInterruptTs = Date.now(); }
             if (typeof stopCrossfadeNow === "function") { try { stopCrossfadeNow(); } catch {} }
             try { audio.pause(); } catch {}
           } else if (_resumeAfterInterrupt) {
@@ -5947,7 +5968,19 @@
       // The statechange can be swallowed entirely when iOS suspended the page
       // during the call — resume the moment the app is foregrounded instead.
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible" && _resumeAfterInterrupt) kickResume();
+        if (document.visibilityState !== "visible") return;
+        if (_resumeAfterInterrupt) { kickResume(); return; }
+        // Zombie sweeper: the hidden-resume verify timer above can itself be
+        // throttled while the phone is locked, leaving a silently-"playing"
+        // element. On foreground, a playing element whose session never
+        // re-activated (within a recent-interruption window) gets rewound and
+        // a hard pause→play kick to bring the sound back.
+        if (!audio.paused && navigator.audioSession.state !== "active" &&
+            Date.now() - _lastInterruptTs < 300000) {
+          _lastInterruptTs = 0; // one sweep per interruption
+          try { if (_interruptPos) audio.currentTime = _interruptPos; audio.pause(); } catch {}
+          playOrRetry();
+        }
       });
       window.addEventListener("pageshow", () => { if (_resumeAfterInterrupt) kickResume(); });
       window.addEventListener("focus", () => { if (_resumeAfterInterrupt) kickResume(); });
