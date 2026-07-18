@@ -5770,6 +5770,10 @@
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && _pendingPlayRetry) playOrRetry();
     });
+    // Last resort: after an interruption iOS can demand a real user gesture
+    // before allowing play() again, even foregrounded. A tap anywhere carries
+    // that gesture — fire the parked play() inside it.
+    document.addEventListener("click", () => { if (_pendingPlayRetry) playOrRetry(); }, true);
 
     // Progress seek
     dom.progressTrack.onclick = (e) => {
@@ -5910,6 +5914,19 @@
     if ("audioSession" in navigator) {
       try { navigator.audioSession.type = "playback"; } catch {}
       let _resumeAfterInterrupt = false;
+      let _resumeTries = 0;
+      // Post-call resume. iOS can reject play() for a second or two right
+      // after the call ends (and outright while backgrounded), so retry a few
+      // times, then park in _pendingPlayRetry for the foreground/tap paths.
+      const tryResume = () => {
+        if (!_resumeAfterInterrupt) return;
+        audio.play().then(() => { _resumeAfterInterrupt = false; _pendingPlayRetry = false; })
+          .catch(() => {
+            if (++_resumeTries < 5) setTimeout(tryResume, 900);
+            else { _resumeAfterInterrupt = false; _pendingPlayRetry = true; }
+          });
+      };
+      const kickResume = () => { _resumeTries = 0; tryResume(); };
       try {
         navigator.audioSession.addEventListener("statechange", () => {
           const s = navigator.audioSession.state;
@@ -5919,14 +5936,21 @@
             _resumeAfterInterrupt = !audio.paused || (Date.now() - _lastPlayingTs < 3000);
             if (typeof stopCrossfadeNow === "function") { try { stopCrossfadeNow(); } catch {} }
             try { audio.pause(); } catch {}
-          } else if (s === "active" && _resumeAfterInterrupt) {
-            // Call ended — pick the song back up like a native player. If iOS
-            // blocks the gestureless play(), playOrRetry re-fires on foreground.
-            _resumeAfterInterrupt = false;
-            playOrRetry();
+          } else if (_resumeAfterInterrupt) {
+            // Call ended. WebKit reports "active" OR "inactive" here — an
+            // interrupted session only re-activates once playback restarts,
+            // so any non-interrupted state means the call is over.
+            kickResume();
           }
         });
       } catch {}
+      // The statechange can be swallowed entirely when iOS suspended the page
+      // during the call — resume the moment the app is foregrounded instead.
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && _resumeAfterInterrupt) kickResume();
+      });
+      window.addEventListener("pageshow", () => { if (_resumeAfterInterrupt) kickResume(); });
+      window.addEventListener("focus", () => { if (_resumeAfterInterrupt) kickResume(); });
     }
 
     // Keyboard shortcuts
