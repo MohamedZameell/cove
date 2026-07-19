@@ -5774,12 +5774,6 @@
     // before allowing play() again, even foregrounded. A tap anywhere carries
     // that gesture — fire the parked play() inside it.
     document.addEventListener("click", () => { if (_pendingPlayRetry) playOrRetry(); }, true);
-    // Native (Capacitor iOS) bridge: the Swift shell calls this when
-    // AVAudioSession reports the call interruption ended with shouldResume.
-    // The native app carries the background-audio entitlement, so play() is
-    // audible even while locked. No-op in the browser/PWA.
-    window.__nativeResume = () => { if (audio.src && !audio.error && audio.paused) playOrRetry(); };
-
     // Progress seek
     dom.progressTrack.onclick = (e) => {
       const rect = dom.progressTrack.getBoundingClientRect();
